@@ -22,5 +22,6 @@
 #include "json_libs/json.h"
 #include "tokenizer/include/tokenizer.h"
 #include "tokenizer/include/trainer.h"
-#include "main_libs/matmul.h"
+#include "main_libs/matmul/matmul.h"
+#include "check_cpu.h"
 #endif  // JIEYU_LIBS_H

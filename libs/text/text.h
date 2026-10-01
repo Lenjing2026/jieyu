@@ -43,7 +43,7 @@ bool check_matmul() {
                 C_ref[i*n+j] = (float)s;
             }
 
-        matmul(m, n, k, A, B, C_got);
+        matmul_choose(m, n, k, A, B, C_got);
 
         bool ok = true;
         for (size_t i = 0; i < sC; i++) {
