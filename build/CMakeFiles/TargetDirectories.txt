@@ -1,3 +1,0 @@
-D:/MyProgect/JieYuAI/build/CMakeFiles/jieyu.dir
-D:/MyProgect/JieYuAI/build/CMakeFiles/edit_cache.dir
-D:/MyProgect/JieYuAI/build/CMakeFiles/rebuild_cache.dir
