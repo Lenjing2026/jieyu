@@ -4,7 +4,7 @@
 // ============================================================
 //  libs/json_libs/json.h —— 极简 JSON 读写类
 //
-//  读：SetJsonWay(路径) -> GetJsonDate(键) / HasKey / ForEachKey / Keys
+//  读：SetJsonWay(路径) -> GetJsonData(键) / HasKey / ForEachKey / Keys
 //  写：WriteJsonKey(键, 值)（存在则改、不存在则建，写完自动格式化）
 //
 //  本文件只是“聚合 + 业务类”，底层能力拆在三个头里：
@@ -15,8 +15,8 @@
 //  用法：
 //    json_libs::json_lib json;
 //    if (json.SetJsonWay("_file/BPE/vocab.json")) {
-//        std::string id  = json.GetJsonDate("!");          // 顶层键
-//        std::string val = json.GetJsonDate("model.type"); // 点号路径取嵌套键
+//        std::string id  = json.GetJsonData("!");          // 顶层键
+//        std::string val = json.GetJsonData("model.type"); // 点号路径取嵌套键
 //        json.WriteJsonKey("model.type", "bpe");           // 写入（自动格式化）
 //    }
 // ============================================================
@@ -83,7 +83,7 @@ public:
     //   * null        -> "null"
     //   * 对象/数组   -> 该值在文件中的原始文本（含花括号/方括号）
     // key 支持 "a.b.c" 形式的嵌套路径；若顶层存在完全同名的键，则优先按整串匹配
-    std::string GetJsonDate(const std::string& key) const {
+    std::string GetJsonData(const std::string& key) const {
         const json_detail::Value* value = find(key);
         if (value == nullptr) {
             return std::string();
@@ -92,12 +92,50 @@ public:
     }
 
     // 带默认值的版本：键不存在时返回 default_value
-    std::string GetJsonDate(const std::string& key, const std::string& default_value) const {
+    std::string GetJsonData(const std::string& key, const std::string& default_value) const {
         const json_detail::Value* value = find(key);
         if (value == nullptr) {
             return default_value;
         }
         return value_to_string(*value);
+    }
+
+    // 取整数："42" -> 42；键不存在或不是数字时返回 default_value
+    int GetJsonInt(const std::string& key, int default_value = 0) const {
+        const std::string text = GetJsonData(key);
+        if (text.empty()) {
+            return default_value;
+        }
+        try {
+            return std::stoi(text);
+        } catch (...) {
+            return default_value;
+        }
+    }
+
+    // 取浮点："3.5" -> 3.5；失败时返回 default_value
+    double GetJsonDouble(const std::string& key, double default_value = 0.0) const {
+        const std::string text = GetJsonData(key);
+        if (text.empty()) {
+            return default_value;
+        }
+        try {
+            return std::stod(text);
+        } catch (...) {
+            return default_value;
+        }
+    }
+
+    // 取布尔："true"/"1" -> true，"false"/"0" -> false；其它返回 default_value
+    bool GetJsonBool(const std::string& key, bool default_value = false) const {
+        const std::string text = GetJsonData(key);
+        if (text == "true" || text == "1") {
+            return true;
+        }
+        if (text == "false" || text == "0") {
+            return false;
+        }
+        return default_value;
     }
 
     // 键是否存在
@@ -126,7 +164,7 @@ public:
     }
 
     // 遍历顶层键值（O(n)，适合大文件，例如 5 万条词表）
-    // 值统一以字符串给出（规则同 GetJsonDate）；visit 返回 false 可提前结束
+    // 值统一以字符串给出（规则同 GetJsonData）；visit 返回 false 可提前结束
     // 返回 false 表示未加载 / 顶层不是对象（visit 主动中断也返回 false）
     bool ForEachKey(const std::function<bool(const std::string& key, const std::string& value)>& visit) const {
         if (!loaded_ || root_.type != json_detail::Value::Type::Object) {

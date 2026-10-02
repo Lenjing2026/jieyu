@@ -2,7 +2,7 @@
 
 `libs/json_libs/` 下的一套 **header-only JSON 读写组件**：纯 C++17，只依赖标准库，全部函数 `inline`，无需编译任何 `.cpp`。
 
-- 读：`SetJsonWay(路径)` → `GetJsonDate(键)` / `HasKey` / `ForEachKey`
+- 读：`SetJsonWay(路径)` → `GetJsonData(键)` / `HasKey` / `ForEachKey`
 - 写：`WriteJsonKey(键, 值)`（存在则改、不存在则建，写完自动 2 空格缩进格式化并落盘）
 
 ---
@@ -39,8 +39,8 @@ int main() {
 
     // 读
     if (json.SetJsonWay("_file/BPE/vocab.json")) {
-        std::cout << json.GetJsonDate("!") << "\n";          // 顶层键
-        std::cout << json.GetJsonDate("model.type") << "\n"; // 嵌套键（点号路径）
+        std::cout << json.GetJsonData("!") << "\n";          // 顶层键
+        std::cout << json.GetJsonData("model.type") << "\n"; // 嵌套键（点号路径）
     } else {
         std::cerr << json.LastError() << "\n";
     }
@@ -62,8 +62,11 @@ int main() {
 | `Reload` | — | `bool` | 用当前路径重新解析 |
 | `GetJsonWay` | — | `const std::string&` | 当前路径 |
 | `IsLoaded` | — | `bool` | 是否已成功加载 |
-| `GetJsonDate` | `const std::string& key` | `std::string` | 取值；键不存在返回空串 |
-| `GetJsonDate` | `key`、`const std::string& default_value` | `std::string` | 键不存在返回默认值 |
+| `GetJsonData` | `const std::string& key` | `std::string` | 取值；键不存在返回空串 |
+| `GetJsonData` | `key`、`const std::string& default_value` | `std::string` | 键不存在返回默认值 |
+| `GetJsonInt` | `key`、`int default_value = 0` | `int` | 按整数取值（`"42"` → `42`）；缺失/非数字返回默认值 |
+| `GetJsonDouble` | `key`、`double default_value = 0.0` | `double` | 按浮点取值（`"3.5"` → `3.5`） |
+| `GetJsonBool` | `key`、`bool default_value = false` | `bool` | `"true"`/`"1"` → true，`"false"`/`"0"` → false |
 | `HasKey` | `key` | `bool` | 键是否存在 |
 | `KeyCount` | — | `size_t` | 顶层键个数（非对象 / 未加载为 0） |
 | `Keys` | — | `std::vector<std::string>` | 顶层全部键名（顺序 = 文件中的顺序） |
@@ -77,7 +80,7 @@ int main() {
 
 ## 4. 读取
 
-### 4.1 取值规则（`GetJsonDate`）
+### 4.1 取值规则（`GetJsonData`）
 
 | JSON 里的类型 | 返回的字符串 |
 | --- | --- |
@@ -91,7 +94,7 @@ int main() {
 ### 4.2 键路径规则
 
 1. **先按整串匹配顶层键**：如果顶层真的存在 `"a.b"` 这样一个键，就取它；
-2. 没有再按 `.` 拆分逐层下钻：`GetJsonDate("model.type")`。
+2. 没有再按 `.` 拆分逐层下钻：`GetJsonData("model.type")`。
 
 这样既能取嵌套字段，又不会把词表里带 `.` 的 token 误拆。
 
@@ -212,7 +215,7 @@ int main(int argc, char** argv) {
     j.WriteJsonKey("name", "昆仑");  // 字符串
 
     std::cout << j.ToJsonText();
-    std::cout << j.GetJsonDate("b") << " " << j.GetJsonDate("c.d") << "\n";
+    std::cout << j.GetJsonData("b") << " " << j.GetJsonData("c.d") << "\n";
     std::cout << j.KeyCount() << " " << j.HasKey("c.d") << "\n";
     for (const std::string& k : j.Keys()) { std::cout << k << " "; }
     std::cout << "\n";
@@ -238,7 +241,7 @@ int main(int argc, char** argv) {
 程序输出：
 
 ```
---- GetJsonDate ---
+--- GetJsonData ---
 b=[20] c.d=[3] c=[{
   "d": 3
 }] x=[] xdef=[-]

@@ -20,8 +20,8 @@
 #include "setup.h"
 #include "model_libs/creater_model.h"
 #include "json_libs/json.h"
-#include "tokenizer/include/tokenizer.h"
-#include "tokenizer/include/trainer.h"
-#include "main_libs/matmul/matmul.h"
-#include "check_cpu.h"
+#include "tokenizer_libs/include/tokenizer.h"
+#include "tokenizer_libs/include/trainer.h"
+#include "matmul_libs/matmul.h"
+#include "date_libs/check_cpu.h"
 #endif  // JIEYU_LIBS_H
