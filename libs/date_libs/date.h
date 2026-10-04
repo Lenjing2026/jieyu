@@ -13,6 +13,7 @@ struct ModelInfo{
     uint8_t head_dim;
     uint32_t intermediate_size;
     uint64_t vocab_size;
+    uint64_t file_size;
     path model_vector;
     path model_info;
     path model_tokenizer;

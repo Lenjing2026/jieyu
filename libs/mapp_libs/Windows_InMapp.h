@@ -3,6 +3,7 @@
 #include<windows.h>
 #include<filesystem>
 #include"../date_libs/date.h"
+#include"../model_libs/bfile.h"
 using namespace std;
 using namespace std::filesystem;
 inline void load_model_map(const path& dir) {
@@ -35,11 +36,15 @@ inline void load_model_map(const path& dir) {
         CloseHandle(hFile);
         throw runtime_error("MapViewOfFile_Error");
     }
+    LARGE_INTEGER fsize={};
+    if(GetFileSizeEx(hFile,&fsize)) model.file_size=fsize.QuadPart;
+    else model.file_size=0;
     CloseHandle(hFile);
     model.model_handle=hMap;
     model.model_map=base;
 }
 inline void free_model_map(){
+    bfile::current().reset();
     if (model.model_map){
         UnmapViewOfFile(model.model_map);
         model.model_map=nullptr;

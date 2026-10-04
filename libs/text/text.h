@@ -10,6 +10,11 @@
 //    check_rmsnorm()    RMSNorm（model_libs/rmsnorm/rmsnorm.h）
 //    check_attention()  因果 GQA 注意力（model_libs/attention/attention.h）
 //    check_transformer_layer()  整层前向端到端（model_libs/transformer_layer.h）
+//    check_generate()   自回归生成（model_libs/generate.h）
+//    check_tensor_dir() model.bf v2 张量目录（model_libs/bfile.h）
+//    check_convert()    safetensors -> model.bf 转换器（model_libs/converter.h）
+//    check_bind_weights() 按名字填 layers[]（model_libs/load_weights.h）
+//    check_pipeline()   文本 -> token -> 生成 -> 文本（model_libs/pipeline.h）
 // ============================================================
 
 // 必须在包含 windows.h 之前定义，避免 min/max 宏污染全局
@@ -27,6 +32,13 @@
 #include "model_libs/rmsnorm/rmsnorm.h"
 #include "model_libs/attention/attention.h"
 #include "model_libs/transformer_layer.h"
+#include "model_libs/generate.h"
+#include "model_libs/bfile.h"
+#include "model_libs/safetensors.h"
+#include "model_libs/converter.h"
+#include "model_libs/load_weights.h"
+#include "model_libs/pipeline.h"
+#include "tokenizer_libs/include/byte_vocab.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -111,7 +123,7 @@ bool check_matmul() {
 //    libs/mapp_libs/Windows_InMapp.h  load_model_map() / free_model_map()
 //    libs/date_libs/date.h            ModelInfo 结构体
 //
-//  model.bf 布局（小端）：
+//  model.bf 布局 v2（小端，详见 libs/model_libs/bfile.h）：
 //    [0..5]   魔数 "JYAIBF"
 //    [6..13]  hidden_size       (uint64)
 //    [14..21] layer_count       (uint64)
@@ -121,8 +133,14 @@ bool check_matmul() {
 //    [25]     head_dim          (uint8)
 //    [26..29] intermediate_size (uint32)
 //    [30..37] vocab_size        (uint64)
-//    [38..63] 零填充，补齐到 64 字节
-//    合计 64 字节
+//    [38..41] version           (uint32, v2 = 2)
+//    [42..45] tensor_count      (uint32)
+//    [46..49] data_off          (uint32, 64 对齐)
+//    [50..53] entry_size        (uint32 = 104)
+//    [54..63] 零填充
+//    [64..data_off)     张量目录（tensor_count × 104 字节）
+//    [data_off..文件尾)  数据区（每个张量 64 字节对齐）
+//    没有张量时就是 64 字节的头
 // ============================================================
 
 namespace text_detail {
@@ -159,6 +177,14 @@ uint32_t read_u32_le(const unsigned char* p) {
 inline constexpr size_t kBfHeaderSize = 38;
 inline constexpr size_t kBfFileSize = 64;
 
+// v2 新增字段的位置与取值
+inline constexpr size_t kBfVersionOff = 38;
+inline constexpr size_t kBfTensorCountOff = 42;
+inline constexpr size_t kBfDataOffOff = 46;
+inline constexpr size_t kBfEntrySizeOff = 50;
+inline constexpr uint32_t kBfVersion2 = 2;
+inline constexpr uint32_t kBfEntrySize2 = 104;
+
 // 一份模型超参（默认值就是测试用的期望值）
 struct model_params {
     int hidden;
@@ -188,10 +214,21 @@ struct bf_head {
     uint8_t head_dim;        // 单头维度
     uint32_t intermediate_size;  // FFN 中间层宽度
     uint64_t vocab_size;     // 词表大小
+    uint32_t version;        // 格式版本（老文件是 0）
+    uint32_t tensor_count;   // 张量个数
+    uint32_t data_off;       // 数据区起点
+    uint32_t entry_size;     // 目录项字节数
     bf_head()
         : ok(false), size(0), magic_ok(false), pad_zero_ok(false), h(0), l(0),
           mode(0), num_heads(0), num_kv_heads(0), head_dim(0),
-          intermediate_size(0), vocab_size(0) {}
+          intermediate_size(0), vocab_size(0), version(0), tensor_count(0),
+          data_off(0), entry_size(0) {}
+
+    // 是不是 v2 头（带张量目录）
+    bool is_v2() const {
+        return ok && version >= kBfVersion2 && entry_size == kBfEntrySize2
+            && data_off >= kBfFileSize;
+    }
 
     // 与期望值逐字段比较
     bool matches(const model_params& p) const {
@@ -228,9 +265,15 @@ bf_head read_bf_head(const std::filesystem::path& dir) {
     head.head_dim = p[25];
     head.intermediate_size = read_u32_le(p + 26);
     head.vocab_size = read_u64_le(p + 30);
+    if (bytes.size() >= 54) {
+        head.version = read_u32_le(p + kBfVersionOff);
+        head.tensor_count = read_u32_le(p + kBfTensorCountOff);
+        head.data_off = read_u32_le(p + kBfDataOffOff);
+        head.entry_size = read_u32_le(p + kBfEntrySizeOff);
+    }
 
     head.pad_zero_ok = true;
-    for (size_t i = kBfHeaderSize; i < bytes.size(); i++) {
+    for (size_t i = kBfEntrySizeOff + 4; i < bytes.size() && i < kBfFileSize; i++) {
         if (p[i] != 0) {
             head.pad_zero_ok = false;
             break;
@@ -291,7 +334,7 @@ bool check_bfile() {
     using text_detail::read_bf_head;
     using text_detail::write_model_info;
 
-    const int total = 17;
+    const int total = 18;
     int passed = 0;
 
     const text_detail::model_params def;   // 期望值：512/16/1/8/2/64/2048/32000
@@ -332,7 +375,19 @@ bool check_bfile() {
         }
 
         bool got = head.ok && head.size == 64;
-        printf("[ 2/%d] 文件大小 %zu 字节 (38 有效 + 补齐到 64)  %s\n", total, head.size, got ? "OK" : "FAIL");
+        printf("[ 2/%d] 文件大小 %zu 字节 (v2 头，0 个张量)      %s\n", total, head.size, got ? "OK" : "FAIL");
+        if (got) {
+            passed++;
+        }
+
+        got = head.ok && head.is_v2() && head.version == 2 && head.tensor_count == 0
+            && head.data_off == 64 && head.entry_size == 104;
+        printf("[18/%d] v2 头字段 version=2 count=0 off=64 size=104  %s\n", total, got ? "OK" : "FAIL");
+        if (!got) {
+            printf("       ! 实际 version=%u count=%u data_off=%u entry=%u\n",
+                   (unsigned)head.version, (unsigned)head.tensor_count,
+                   (unsigned)head.data_off, (unsigned)head.entry_size);
+        }
         if (got) {
             passed++;
         }
@@ -384,7 +439,7 @@ bool check_bfile() {
         }
 
         got = head.ok && head.pad_zero_ok;
-        printf("[10/%d] 补齐字节 38..63 全为 0                    %s\n", total, got ? "OK" : "FAIL");
+        printf("[10/%d] 补齐字节 54..63 全为 0                    %s\n", total, got ? "OK" : "FAIL");
         if (got) {
             passed++;
         }
@@ -592,12 +647,12 @@ bool check_bfile() {
                (unsigned long long)head.h, (unsigned long long)head.l, (unsigned)head.mode);
     }
 
-    // ---------- 证据：model.bf 前 38 字节的十六进制 ----------
+    // ---------- 证据：model.bf 前 54 字节的十六进制 ----------
     {
         std::string bytes;
         if (text_detail::read_bytes((dir_ok / "model.bf").string(), bytes)) {
-            printf("证据: model_ok/model.bf 前 38 字节 =");
-            for (size_t i = 0; i < bytes.size() && i < 38; i++) {
+            printf("证据: model_ok/model.bf 前 54 字节 =");
+            for (size_t i = 0; i < bytes.size() && i < 54; i++) {
                 printf(" %02X", (unsigned char)bytes[i]);
             }
             printf("\n");
@@ -1608,7 +1663,7 @@ inline void reference(const std::vector<float>& X0,
     const int q_dim = num_heads * head_dim;
     const int kv_dim = num_kv_heads * head_dim;
 
-    std::vector<float> X = X0;
+    std::vector<float> X(X0.begin(), X0.begin() + static_cast<size_t>(seq) * hidden);
     std::vector<float> xn;
 
     rms_rows(X, rms1, seq, hidden, eps, xn);                 // 1
@@ -1836,6 +1891,1198 @@ bool check_transformer_layer() {
     }
 
     printf("check_transformer_layer: %d/%d passed\n", passed, total);
+    return passed == total;
+}
+
+// ============================================================
+//  check_generate() —— 自回归生成
+//
+//  被测对象：libs/model_libs/generate.h  generate()
+//
+//  每步：embed 查表 -> 整层 forward（含最终 RMSNorm）-> 最后一行 * lm_head
+//        -> argmax / 温度采样 -> 追加 token
+//
+//  参考实现：用 layer_detail / rms_detail 的 double 参考把同样一步重做一遍
+// ============================================================
+
+namespace gen_detail {
+
+struct gen_weights {
+    int vocab, hidden, num_heads, num_kv_heads, head_dim, intermediate, num_layers, max_seq;
+    std::vector<float> embed, lm_head, final_rms, cos_t, sin_t;
+    std::vector<std::vector<float>> rms1, Wq, Wk, Wv, Wo, rms2, W1, W2, W3;
+    std::vector<LayerWeights> layers;
+
+    void build(int v, int h, int nh, int nkv, int hd, int inter, int nl, int mseq, bool zero_lm) {
+        vocab = v; hidden = h; num_heads = nh; num_kv_heads = nkv; head_dim = hd;
+        intermediate = inter; num_layers = nl; max_seq = mseq;
+        const int qdim = nh * hd;
+        const int kvdim = nkv * hd;
+        rms1.clear(); rms2.clear(); Wq.clear(); Wk.clear(); Wv.clear(); Wo.clear();
+        W1.clear(); W2.clear(); W3.clear(); layers.clear();
+        for (int l = 0; l < nl; l++) {
+            rms1.push_back(std::vector<float>(h, 1.0f));
+            rms2.push_back(std::vector<float>(h, 1.0f));
+            Wq.push_back(std::vector<float>(static_cast<size_t>(h) * qdim));
+            Wk.push_back(std::vector<float>(static_cast<size_t>(h) * kvdim));
+            Wv.push_back(std::vector<float>(static_cast<size_t>(h) * kvdim));
+            Wo.push_back(std::vector<float>(static_cast<size_t>(qdim) * h));
+            W1.push_back(std::vector<float>(static_cast<size_t>(h) * inter));
+            W2.push_back(std::vector<float>(static_cast<size_t>(inter) * h));
+            W3.push_back(std::vector<float>(static_cast<size_t>(h) * inter));
+        }
+        for (int l = 0; l < nl; l++) {
+            for (size_t i = 0; i < rms1[l].size(); i++) rms1[l][i] = 1.0f + ffn_detail::pseudo(static_cast<int>(i) + 3 * l) * 0.25f;
+            for (size_t i = 0; i < rms2[l].size(); i++) rms2[l][i] = 1.0f + ffn_detail::pseudo(static_cast<int>(i) + 5 * l) * 0.25f;
+            for (size_t i = 0; i < Wq[l].size(); i++) Wq[l][i] = ffn_detail::pseudo(static_cast<int>(i) + 7 * l) * 0.5f;
+            for (size_t i = 0; i < Wk[l].size(); i++) Wk[l][i] = ffn_detail::pseudo(static_cast<int>(i) + 11 * l) * 0.5f;
+            for (size_t i = 0; i < Wv[l].size(); i++) Wv[l][i] = ffn_detail::pseudo(static_cast<int>(i) + 13 * l) * 0.5f;
+            for (size_t i = 0; i < Wo[l].size(); i++) Wo[l][i] = ffn_detail::pseudo(static_cast<int>(i) + 17 * l) * 0.5f;
+            for (size_t i = 0; i < W1[l].size(); i++) W1[l][i] = ffn_detail::pseudo(static_cast<int>(i) + 19 * l) * 0.5f;
+            for (size_t i = 0; i < W2[l].size(); i++) W2[l][i] = ffn_detail::pseudo(static_cast<int>(i) + 23 * l) * 0.5f;
+            for (size_t i = 0; i < W3[l].size(); i++) W3[l][i] = ffn_detail::pseudo(static_cast<int>(i) + 29 * l) * 0.5f;
+        }
+        embed.assign(static_cast<size_t>(v) * h, 0.0f);
+        for (size_t i = 0; i < embed.size(); i++) embed[i] = ffn_detail::pseudo(static_cast<int>(i) + 101) * 0.5f;
+        lm_head.assign(static_cast<size_t>(h) * v, 0.0f);
+        if (!zero_lm) {
+            for (size_t i = 0; i < lm_head.size(); i++) lm_head[i] = ffn_detail::pseudo(static_cast<int>(i) + 211) * 0.5f;
+        }
+        final_rms.assign(h, 1.0f);
+        for (size_t i = 0; i < final_rms.size(); i++) final_rms[i] = 1.0f + ffn_detail::pseudo(static_cast<int>(i) + 307) * 0.25f;
+        rope_detail::make_tables(mseq, hd, cos_t, sin_t);
+        layers.resize(nl);
+        for (int l = 0; l < nl; l++) {
+            layers[l].rms1_weight = rms1[l].data();
+            layers[l].Wq = Wq[l].data();
+            layers[l].Wk = Wk[l].data();
+            layers[l].Wv = Wv[l].data();
+            layers[l].Wo = Wo[l].data();
+            layers[l].rms2_weight = rms2[l].data();
+            layers[l].W1 = W1[l].data();
+            layers[l].W2 = W2[l].data();
+            layers[l].W3 = W3[l].data();
+        }
+    }
+
+    int run(const int* prompt, int prompt_len, int n_new, float temp, int* out) const {
+        return generate(prompt, prompt_len, nullptr, 0, embed.data(), lm_head.data(),
+                        layers.data(), num_layers, final_rms.data(), cos_t.data(),
+                        sin_t.data(), max_seq, n_new, temp, vocab, hidden,
+                        num_heads, num_kv_heads, head_dim, intermediate, out);
+    }
+};
+
+inline int reference_ids(const gen_weights& w, const int* prompt, int prompt_len,
+                         int n_new, int* out) {
+    const float eps = 1e-5f;
+    for (int i = 0; i < prompt_len; i++) {
+        out[i] = prompt[i];
+    }
+    int len = prompt_len;
+    std::vector<float> X(static_cast<size_t>(w.max_seq) * w.hidden);
+    for (int step = 0; step < n_new && len < w.max_seq; step++) {
+        for (int i = 0; i < len; i++) {
+            const float* row = w.embed.data() + static_cast<size_t>(out[i]) * w.hidden;
+            for (int d = 0; d < w.hidden; d++) {
+                X[static_cast<size_t>(i) * w.hidden + d] = row[d];
+            }
+        }
+        std::vector<float> hs;
+        for (int l = 0; l < w.num_layers; l++) {
+            const std::vector<float>& src = (l == 0) ? X : hs;
+            std::vector<float> tmp;
+            layer_detail::reference(src, w.rms1[l], w.Wq[l], w.Wk[l], w.Wv[l], w.Wo[l],
+                                    w.cos_t, w.sin_t, w.rms2[l], w.W1[l], w.W2[l],
+                                    w.W3[l], len, w.hidden, w.num_heads, w.num_kv_heads,
+                                    w.head_dim, w.intermediate, eps, tmp);
+            hs = tmp;
+        }
+        for (int i = 0; i < len; i++) {
+            std::vector<float> row(hs.begin() + static_cast<size_t>(i) * w.hidden,
+                                   hs.begin() + static_cast<size_t>(i + 1) * w.hidden);
+            const std::vector<float> nr = rms_detail::reference(row, w.final_rms, w.hidden, eps);
+            for (int d = 0; d < w.hidden; d++) {
+                hs[static_cast<size_t>(i) * w.hidden + d] = nr[d];
+            }
+        }
+        const std::vector<float> last(hs.begin() + static_cast<size_t>(len - 1) * w.hidden,
+                                      hs.begin() + static_cast<size_t>(len) * w.hidden);
+        std::vector<float> logits;
+        layer_detail::dmatmul(1, w.vocab, w.hidden, last, w.lm_head, logits);
+        int best = 0;
+        for (int v = 1; v < w.vocab; v++) {
+            if (logits[v] > logits[best]) {
+                best = v;
+            }
+        }
+        out[len++] = best;
+    }
+    return len;
+}
+
+}  // namespace gen_detail
+
+bool check_generate() {
+    using namespace gen_detail;
+
+    const int total = 5;
+    int passed = 0;
+
+    printf("==== 自回归生成测试 ====\n");
+
+    const int prompt[3] = {1, 5, 9};
+    const int n_new = 3;
+
+    gen_weights w;
+    w.build(16, 8, 2, 1, 4, 16, 2, 8, false);
+
+    std::vector<int> got(3 + n_new, 0);
+    std::vector<int> want(3 + n_new, 0);
+    const int len_got = w.run(prompt, 3, n_new, 0.0f, got.data());
+
+    // ---------- 1. 与 double 参考逐 token 一致 ----------
+    {
+        const int len_want = reference_ids(w, prompt, 3, n_new, want.data());
+        bool ok = (len_got == len_want);
+        for (int i = 0; i < len_got && ok; i++) {
+            if (got[i] != want[i]) {
+                ok = false;
+            }
+        }
+        printf("[1/%d] 与 double 参考逐 token 一致 (prompt+%d)\n", total, n_new);
+        printf("       实际 %d %d %d   期望 %d %d %d   %s\n",
+               got[3], got[4], got[5], want[3], want[4], want[5], ok ? "OK" : "FAIL");
+        if (ok) {
+            passed++;
+        }
+    }
+
+    // ---------- 2. 前缀保持 + 长度正确 ----------
+    {
+        bool ok = (len_got == 3 + n_new);
+        for (int i = 0; i < 3; i++) {
+            if (got[i] != prompt[i]) {
+                ok = false;
+            }
+        }
+        printf("[2/%d] 前缀保持不变、长度 = %d   %s\n", total, 3 + n_new, ok ? "OK" : "FAIL");
+        if (ok) {
+            passed++;
+        }
+    }
+
+    // ---------- 3. 全零 lm_head -> 所有 logits 相等 -> 恒取下标 0 ----------
+    {
+        gen_weights z;
+        z.build(16, 8, 2, 1, 4, 16, 2, 8, true);
+        std::vector<int> o(3 + n_new, -1);
+        z.run(prompt, 3, n_new, 0.0f, o.data());
+        bool ok = true;
+        for (int i = 3; i < 3 + n_new; i++) {
+            if (o[i] != 0) {
+                ok = false;
+            }
+        }
+        printf("[3/%d] 全零 lm_head -> 生成 token 全为 0      %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) {
+            passed++;
+        }
+    }
+
+    // ---------- 4. 确定性：跑两次完全一致 ----------
+    {
+        std::vector<int> again(3 + n_new, -1);
+        w.run(prompt, 3, n_new, 0.0f, again.data());
+        bool ok = true;
+        for (int i = 0; i < 3 + n_new; i++) {
+            if (again[i] != got[i]) {
+                ok = false;
+            }
+        }
+        printf("[4/%d] 贪心生成可复现（跑两次一致）          %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) {
+            passed++;
+        }
+    }
+
+    // ---------- 5. EOS 提前停止 ----------
+    {
+        const int eos = got[3];
+        std::vector<int> o(3 + n_new, -1);
+        const int len = generate(prompt, 3, &eos, 1, w.embed.data(), w.lm_head.data(),
+                                 w.layers.data(), w.num_layers, w.final_rms.data(),
+                                 w.cos_t.data(), w.sin_t.data(), w.max_seq, n_new, 0.0f,
+                                 w.vocab, w.hidden, w.num_heads, w.num_kv_heads, w.head_dim,
+                                 w.intermediate, o.data());
+        const bool ok = (len == 4 && o[3] == eos);
+        printf("[5/%d] 命中 EOS 立即停止 (长度 %d)           %s\n", total, len, ok ? "OK" : "FAIL");
+        if (ok) {
+            passed++;
+        }
+    }
+
+    printf("check_generate: %d/%d passed\n", passed, total);
+    return passed == total;
+}
+
+// ============================================================
+//  check_tensor_dir() —— model.bf v2：张量目录 + 数据区
+//
+//  被测对象：libs/model_libs/bfile.h 的 write_bfile / View / read_header_file
+//  重点：目录项布局、数据区 64 字节对齐、按名字取数、损坏文件被拦住
+// ============================================================
+bool check_tensor_dir() {
+    namespace fs = std::filesystem;
+    using text_detail::read_bf_head;
+    using text_detail::read_bytes;
+    using text_detail::write_model_info;
+
+    const int total = 11;
+    int passed = 0;
+    printf("==== model.bf 张量目录测试 ====\n");
+
+    const fs::path dir = fs::path("_file") / "bfile_test" / "tensor_dir";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const fs::path bf_path = dir / "model.bf";
+
+    text_detail::model_params p;
+    p.hidden = 8;
+    p.layers = 2;
+    p.mode = 1;
+    p.num_heads = 2;
+    p.num_kv_heads = 1;
+    p.head_dim = 4;
+    p.intermediate_size = 16;
+    p.vocab_size = 259;
+    write_model_info(dir, p);
+
+    std::vector<float> norm(8), q(64), odd(123);
+    for (int i = 0; i < 8; i++) norm[i] = 1.0f + 0.125f * i;
+    for (int i = 0; i < 64; i++) q[i] = ffn_detail::pseudo(i + 5) * 0.5f;
+    for (int i = 0; i < 123; i++) odd[i] = ffn_detail::pseudo(i + 77) * 0.25f;
+
+    bfile::Header head;
+    head.hidden = 8;
+    head.layers = 2;
+    head.mode = 1;
+    head.num_heads = 2;
+    head.num_kv_heads = 1;
+    head.head_dim = 4;
+    head.intermediate = 16;
+    head.vocab_size = 259;
+
+    std::vector<bfile::Tensor> ts;
+    ts.push_back(bfile::make_f32("model.norm.weight", {8}, norm));
+    ts.push_back(bfile::make_f32("model.layers.0.self_attn.q_proj.weight", {8, 8}, q));
+    ts.push_back(bfile::make_f32("model.odd.weight", {123}, odd));
+
+    // 目录 3*104=312 字节，64+312=376 -> 数据区从 384 开始
+    // 数据区：norm 32 字节，q 对齐到 64 再放 256 字节，odd 对齐到 320 再放 492 字节
+    const size_t want_data_off = bfile::align_up(bfile::kHeaderSize + ts.size() * bfile::kEntrySize);
+    const uint64_t want_off0 = 0;
+    const uint64_t want_off1 = bfile::align_up(32);
+    const uint64_t want_off2 = bfile::align_up(want_off1 + 256);
+    const size_t want_size = want_data_off + static_cast<size_t>(want_off2) + 492;
+
+    try {
+        bfile::write_bfile(bf_path.string(), head, ts);
+    } catch (const std::exception& e) {
+        printf("       ! write_bfile 抛异常: %s\n", e.what());
+    }
+
+    // ---------- 1. 头部字段 ----------
+    {
+        const text_detail::bf_head h = read_bf_head(dir);
+        const bool ok = h.is_v2() && h.tensor_count == 3
+            && h.data_off == static_cast<uint32_t>(want_data_off) && h.entry_size == 104;
+        printf("[ 1/%d] 头部 version=2 count=3 data_off=%zu entry=104  %s\n",
+               total, want_data_off, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 2. 文件大小 ----------
+    {
+        const uint64_t size = fs::file_size(bf_path, ec);
+        const bool ok = (size == want_size);
+        printf("[ 2/%d] 文件大小 %llu（期望 %llu）               %s\n", total,
+               (unsigned long long)size, (unsigned long long)want_size, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 3. 目录项：offset 64 对齐、nbytes 与 shape 相符 ----------
+    {
+        bfile::Header read_head;
+        std::vector<bfile::Entry> entries;
+        uint64_t size = 0;
+        bfile::read_header_file(bf_path.string(), read_head, entries, size);
+        bool ok = (entries.size() == 3);
+        if (ok) ok = entries[0].offset == want_off0 && entries[1].offset == want_off1
+                     && entries[2].offset == want_off2;
+        if (ok) ok = entries[0].nbytes == 32 && entries[1].nbytes == 256 && entries[2].nbytes == 492;
+        printf("[ 3/%d] 数据区偏移 0/64/320，长度 32/256/492     %s\n", total, ok ? "OK" : "FAIL");
+        if (!ok && entries.size() == 3) {
+            printf("       ! 实际 %llu/%llu/%llu 长度 %llu/%llu/%llu\n",
+                   (unsigned long long)entries[0].offset, (unsigned long long)entries[1].offset,
+                   (unsigned long long)entries[2].offset, (unsigned long long)entries[0].nbytes,
+                   (unsigned long long)entries[1].nbytes, (unsigned long long)entries[2].nbytes);
+        }
+        if (ok) passed++;
+    }
+
+    // ---------- 4. 目录项 shape / dtype ----------
+    {
+        bfile::Header read_head;
+        std::vector<bfile::Entry> entries;
+        uint64_t size = 0;
+        bfile::read_header_file(bf_path.string(), read_head, entries, size);
+        bool ok = entries.size() == 3;
+        if (ok) ok = entries[1].ndim == 2 && entries[1].shape[0] == 8 && entries[1].shape[1] == 8;
+        if (ok) ok = entries[2].ndim == 1 && entries[2].shape[0] == 123;
+        if (ok) ok = entries[0].dtype == bfile::F32 && entries[1].dtype == bfile::F32;
+        printf("[ 4/%d] 目录项 shape / dtype 正确               %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 5. install_model + 张量表挂上 ----------
+    {
+        free_model_map();
+        bool ok = false;
+        try {
+            install_model(dir);
+            const bfile::View& v = bfile::current();
+            ok = v.ok && v.tensor_count == 3 && v.data_off == want_data_off;
+        } catch (const std::exception& e) {
+            printf("       ! install_model 抛异常: %s\n", e.what());
+        }
+        printf("[ 5/%d] install_model 后张量表就绪（%u 个）    %s\n", total,
+               (unsigned)bfile::current().tensor_count, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 6. 按名字取指针 ----------
+    {
+        const bfile::Entry* e0 = find_tensor("model.norm.weight");
+        const bfile::Entry* e1 = find_tensor("model.layers.0.self_attn.q_proj.weight");
+        const bfile::Entry* e2 = find_tensor("model.odd.weight");
+        const bool ok = e0 != nullptr && e1 != nullptr && e2 != nullptr && e0->ndim == 1;
+        printf("[ 6/%d] 三个张量都能按名字找到                  %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 7. 数据逐字节一致（一维） ----------
+    {
+        const float* got = tensor_f32("model.norm.weight");
+        bool ok = (got != nullptr);
+        if (ok) ok = std::memcmp(got, norm.data(), norm.size() * 4) == 0;
+        printf("[ 7/%d] norm 权重逐字节一致                     %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 8. 数据逐字节一致（二维） ----------
+    {
+        const float* got = tensor_f32("model.layers.0.self_attn.q_proj.weight");
+        bool ok = (got != nullptr);
+        if (ok) ok = std::memcmp(got, q.data(), q.size() * 4) == 0;
+        printf("[ 8/%d] q_proj 权重逐字节一致                   %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 9. 长度不是 64 倍数的张量也能读对 ----------
+    {
+        const bfile::Entry* e = find_tensor("model.odd.weight");
+        const float* got = tensor_f32("model.odd.weight");
+        bool ok = (e != nullptr && got != nullptr && e->nbytes == 492);
+        if (ok) ok = std::memcmp(got, odd.data(), odd.size() * 4) == 0;
+        printf("[ 9/%d] 492 字节（非对齐长度）张量读取正确       %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 10. 查不到的名字返回空 ----------
+    {
+        const bool ok = (find_tensor("model.not.exist") == nullptr)
+            && (tensor_f32("model.not.exist") == nullptr);
+        printf("[10/%d] 查不存在的张量返回空                    %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 11. 损坏的 data_off 被拦住 ----------
+    {
+        std::string bytes;
+        read_bytes(bf_path.string(), bytes);
+        bool ok = false;
+        if (bytes.size() >= 64) {
+            unsigned char broken[64];
+            std::memcpy(broken, bytes.data(), 64);
+            bfile::write_u32(broken + 46, 0xFFFFFFF0u);   // data_off 指到文件外
+            bfile::View v;
+            ok = !v.open(broken, bytes.size());
+            // 顺便确认正常文件是能被接受的
+            bfile::View good;
+            ok = ok && good.open(bytes.data(), bytes.size()) && good.tensor_count == 3;
+        }
+        printf("[11/%d] 数据区起点越界 -> 检查不通过           %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    free_model_map();
+    printf("check_tensor_dir: %d/%d passed\n", passed, total);
+    return passed == total;
+}
+
+// ============================================================
+//  check_convert() —— safetensors -> model.bf（纯 C++ 转换器）
+//
+//  被测对象：libs/model_libs/safetensors.h + converter.h
+//  做法：造一份演示模型（层权重全 0，lm_head 输出“下一个字节”），
+//        再塞两个 f16/bf16 张量，转成 model.bf 后逐项核对
+// ============================================================
+namespace conv_detail {
+
+inline void make_probe_tensors(std::vector<safetensors::RawTensor>& out) {
+    const float values[4] = {0.5f, -0.25f, 1.5f, -3.0f};
+
+    safetensors::RawTensor f16;
+    f16.name = "probe.f16.weight";
+    f16.dtype = bfile::F16;
+    f16.shape = {4};
+    f16.data.resize(8);
+    for (int i = 0; i < 4; i++) {
+        const uint16_t h = converter::float_to_half(values[i]);
+        f16.data[static_cast<size_t>(i) * 2] = static_cast<unsigned char>(h & 0xFF);
+        f16.data[static_cast<size_t>(i) * 2 + 1] = static_cast<unsigned char>(h >> 8);
+    }
+    out.push_back(f16);
+
+    safetensors::RawTensor bf16;
+    bf16.name = "probe.bf16.weight";
+    bf16.dtype = bfile::BF16;
+    bf16.shape = {4};
+    bf16.data.resize(8);
+    for (int i = 0; i < 4; i++) {
+        const uint16_t h = converter::float_to_bf16(values[i]);
+        bf16.data[static_cast<size_t>(i) * 2] = static_cast<unsigned char>(h & 0xFF);
+        bf16.data[static_cast<size_t>(i) * 2 + 1] = static_cast<unsigned char>(h >> 8);
+    }
+    out.push_back(bf16);
+}
+
+}  // namespace conv_detail
+
+bool check_convert() {
+    namespace fs = std::filesystem;
+    using text_detail::read_bf_head;
+
+    const int total = 12;
+    int passed = 0;
+    printf("==== safetensors -> model.bf 转换器测试 ====\n");
+
+    const fs::path root = fs::path("_file") / "conv_test";
+    const fs::path src = root / "src";
+    const fs::path out_dir = root / "model";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+
+    converter::DemoSpec spec;
+    const int hidden = spec.hidden;
+    const int heads = spec.heads;
+    const int head_dim = spec.head_dim;
+    const int kv_heads = spec.kv_heads;
+    const int intermediate = spec.intermediate;
+    const int layers = spec.layers;
+    const int vocab = spec.vocab;
+
+    converter::Result result;
+    bool converted = false;
+    try {
+        converter::make_demo_model(src.string(), spec);
+        std::vector<safetensors::RawTensor> probe;
+        conv_detail::make_probe_tensors(probe);
+        safetensors::write((src / "probe.safetensors").string(), probe);
+
+        converter::Options opt;
+        opt.sources.push_back((src / "model.safetensors").string());
+        opt.sources.push_back((src / "probe.safetensors").string());
+        opt.out_dir = out_dir.string();
+        opt.config_path = (src / "config.json").string();
+        opt.tokenizer_dir = src.string();
+        opt.verbose = false;
+        result = converter::convert(opt);
+        converted = true;
+    } catch (const std::exception& e) {
+        printf("       ! 转换抛异常: %s\n", e.what());
+    }
+
+    // 预期目录项：1 embed + layers*9 + 1 norm + 1 lm_head + 2 probe
+    const size_t want_count = 1 + static_cast<size_t>(layers) * 9 + 1 + 1 + 2;
+    const size_t want_data_off = bfile::align_up(bfile::kHeaderSize + want_count * bfile::kEntrySize);
+
+    // ---------- 1. 转换成功 + 文件存在 ----------
+    {
+        const bool ok = converted && fs::exists(out_dir / "model.bf", ec)
+            && fs::exists(out_dir / "model_info.json", ec);
+        printf("[ 1/%d] 转换完成，model.bf / model_info.json 都在  %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 2. 超参 ----------
+    {
+        const bool ok = converted && result.head.hidden == static_cast<uint64_t>(hidden)
+            && result.head.layers == static_cast<uint64_t>(layers)
+            && result.head.num_heads == heads && result.head.num_kv_heads == kv_heads
+            && result.head.head_dim == head_dim && result.head.intermediate == static_cast<uint32_t>(intermediate)
+            && result.head.vocab_size == static_cast<uint64_t>(vocab);
+        printf("[ 2/%d] 超参 hidden=%d layers=%d heads=%d kv=%d dim=%d inter=%d vocab=%d  %s\n",
+               total, hidden, layers, heads, kv_heads, head_dim, intermediate, vocab, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 3. 张量个数与数据区起点 ----------
+    {
+        const text_detail::bf_head h = read_bf_head(out_dir);
+        const bool ok = h.is_v2() && h.tensor_count == want_count
+            && h.data_off == static_cast<uint32_t>(want_data_off);
+        printf("[ 3/%d] 张量 %zu 个（2 个分片合并），数据区起点 %zu  %s\n",
+               total, want_count, want_data_off, ok ? "OK" : "FAIL");
+        if (!ok) {
+            printf("       ! 实际 count=%u data_off=%u\n",
+                   (unsigned)h.tensor_count, (unsigned)h.data_off);
+        }
+        if (ok) passed++;
+    }
+
+    // ---------- 4. 每个张量 offset 64 对齐、不越界 ----------
+    {
+        bool ok = converted;
+        try {
+            bfile::Header head;
+            std::vector<bfile::Entry> dir;
+            uint64_t size = 0;
+            bfile::read_header_file((out_dir / "model.bf").string(), head, dir, size);
+            // read_header_file 内部就会校验对齐与越界，能跑完就说明没问题
+            ok = ok && (size > 0) && !dir.empty();
+            ok = ok && (head.hidden == static_cast<uint64_t>(hidden));
+        } catch (const std::exception& e) {
+            printf("       ! read_header_file 抛异常: %s\n", e.what());
+            ok = false;
+        }
+        printf("[ 4/%d] 全部张量 offset 64 对齐、数据不越界      %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    free_model_map();
+    bool loaded = false;
+    try {
+        install_model(out_dir);
+        loaded = bfile::current().ok;
+    } catch (const std::exception& e) {
+        printf("       ! install_model 抛异常: %s\n", e.what());
+    }
+
+    // ---------- 5. 全部张量都是 f32、名字都能找到 ----------
+    {
+        bool ok = loaded;
+        const bfile::View& v = bfile::current();
+        for (uint32_t i = 0; i < v.tensor_count && ok; i++) {
+            if (v.entry(i)->dtype != bfile::F32) ok = false;
+        }
+        static const char* names[] = {
+            "model.embed_tokens.weight", "model.norm.weight", "lm_head.weight",
+            "model.layers.0.input_layernorm.weight", "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.self_attn.k_proj.weight", "model.layers.0.self_attn.v_proj.weight",
+            "model.layers.0.self_attn.o_proj.weight", "model.layers.0.post_attention_layernorm.weight",
+            "model.layers.0.mlp.gate_proj.weight", "model.layers.0.mlp.up_proj.weight",
+            "model.layers.0.mlp.down_proj.weight", "probe.f16.weight", "probe.bf16.weight"};
+        for (const char* name : names) {
+            if (find_tensor(name) == nullptr) {
+                ok = false;
+                printf("       ! 少了 %s\n", name);
+            }
+        }
+        printf("[ 5/%d] 全部张量 dtype=f32 且都装上了            %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 6. embed 是恒等映射（转置时不该动它） ----------
+    {
+        const float* embed = tensor_f32("model.embed_tokens.weight");
+        bool ok = (embed != nullptr);
+        if (ok) ok = (embed[0] == 1.0f) && (embed[1] == 0.0f)
+                     && (embed[static_cast<size_t>(5) * hidden + 5] == 1.0f)
+                     && (embed[static_cast<size_t>(5) * hidden + 6] == 0.0f)
+                     && (embed[static_cast<size_t>(vocab - 1) * hidden] == 0.0f);
+        printf("[ 6/%d] embed_tokens 原样搬过来（没被转置）      %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 7. lm_head 被转置：bf[d][t]=1 当且仅当 t=d+1 ----------
+    {
+        const float* lm = tensor_f32("lm_head.weight");
+        const size_t n = static_cast<size_t>(vocab);
+        bool ok = (lm != nullptr);
+        if (ok) ok = (lm[0 * n + 1] == 1.0f) && (lm[0 * n + 0] == 0.0f)
+                     && (lm[10 * n + 11] == 1.0f) && (lm[10 * n + 10] == 0.0f)
+                     && (lm[254 * n + 255] == 1.0f);
+        printf("[ 7/%d] lm_head 已转置（[hidden,vocab]）          %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 8. f16 -> f32 ----------
+    {
+        const float* got = tensor_f32("probe.f16.weight");
+        const float want[4] = {0.5f, -0.25f, 1.5f, -3.0f};
+        bool ok = (got != nullptr);
+        for (int i = 0; ok && i < 4; i++) {
+            if (got[i] != want[i]) ok = false;
+        }
+        printf("[ 8/%d] f16 张量转成 f32 数值精确               %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 9. bf16 -> f32 ----------
+    {
+        const float* got = tensor_f32("probe.bf16.weight");
+        const float want[4] = {0.5f, -0.25f, 1.5f, -3.0f};
+        bool ok = (got != nullptr);
+        for (int i = 0; ok && i < 4; i++) {
+            if (got[i] != want[i]) ok = false;
+        }
+        printf("[ 9/%d] bf16 张量转成 f32 数值精确              %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 10. bind_model：形状检查全过 ----------
+    {
+        pipeline::ModelRefs refs;
+        std::string err;
+        const bool ok = pipeline::bind_model(refs, 64, &err);
+        if (!ok) printf("       ! %s\n", err.c_str());
+        printf("[10/%d] bind_model 形状校验全过                 %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 11. 词表文件也一起复制过来了 ----------
+    {
+        const bool ok = fs::exists(out_dir / "vocab.json", ec) && fs::exists(out_dir / "merges.txt", ec);
+        printf("[11/%d] 分词器文件已复制到输出目录              %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 12. 权重共享：没有 lm_head 时自动补转置副本 ----------
+    {
+        bool ok = false;
+        try {
+            const fs::path src2 = root / "src_tied";
+            const fs::path out2 = root / "model_tied";
+            converter::make_demo_model(src2.string(), spec, false);   // 不写 lm_head
+            converter::Options opt;
+            opt.sources.push_back((src2 / "model.safetensors").string());
+            opt.out_dir = out2.string();
+            opt.config_path = (src2 / "config.json").string();
+            opt.verbose = false;
+            const converter::Result r2 = converter::convert(opt);
+            // 重新装一遍这个目录，检查补出来的 lm_head
+            free_model_map();
+            install_model(out2);
+            const float* lm = tensor_f32("lm_head.weight");
+            const bfile::Entry* e = find_tensor("lm_head.weight");
+            ok = r2.tied_lm_head && lm != nullptr && e != nullptr
+                 && e->shape[0] == static_cast<uint32_t>(hidden)
+                 && e->shape[1] == static_cast<uint32_t>(vocab)
+                 && (lm[0 * static_cast<size_t>(vocab) + 0] == 1.0f)      // embed 第 0 行第 0 列
+                 && (lm[3 * static_cast<size_t>(vocab) + 3] == 1.0f);
+        } catch (const std::exception& e) {
+            printf("       ! 权重共享路径抛异常: %s\n", e.what());
+        }
+        printf("[12/%d] 缺 lm_head 时补一份转置副本              %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    free_model_map();
+    printf("check_convert: %d/%d passed\n", passed, total);
+    return passed == total;
+}
+
+// ============================================================
+//  check_bind_weights() —— 按名字拿指针，填进 layers[] 跑生成
+//
+//  被测对象：libs/model_libs/load_weights.h + pipeline.h 的 bind_model
+//  重点：指针是否指到正确的张量、形状不对要能拦住、缺张量要能报出名字
+// ============================================================
+namespace pipe_detail {
+
+// 造一套权重（lm_head 放大一点，让 argmax 稳稳分开，浮点误差不会翻转结果）
+inline void make_weights(gen_detail::gen_weights& w, int vocab, int hidden, int heads, int kv,
+                         int head_dim, int inter, int layers, int max_seq) {
+    w.build(vocab, hidden, heads, kv, head_dim, inter, layers, max_seq, false);
+    for (size_t i = 0; i < w.lm_head.size(); i++) {
+        w.lm_head[i] = ffn_detail::pseudo(static_cast<int>(i) + 211) * 2.0f;
+    }
+}
+
+// 把一套权重写成 model.bf（按引擎要的 [k,n] 布局，不需要转置）
+inline void write_model_dir(const std::filesystem::path& dir, const gen_detail::gen_weights& w,
+                            bool wrong_q = false, bool drop_final_norm = false) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const uint32_t h = static_cast<uint32_t>(w.hidden);
+    const uint32_t qd = static_cast<uint32_t>(w.num_heads * w.head_dim);
+    const uint32_t kvd = static_cast<uint32_t>(w.num_kv_heads * w.head_dim);
+    const uint32_t inter = static_cast<uint32_t>(w.intermediate);
+    const uint32_t vocab = static_cast<uint32_t>(w.vocab);
+
+    bfile::Header head;
+    head.hidden = w.hidden;
+    head.layers = w.num_layers;
+    head.mode = 1;
+    head.num_heads = static_cast<uint8_t>(w.num_heads);
+    head.num_kv_heads = static_cast<uint8_t>(w.num_kv_heads);
+    head.head_dim = static_cast<uint8_t>(w.head_dim);
+    head.intermediate = inter;
+    head.vocab_size = vocab;
+
+    std::vector<bfile::Tensor> ts;
+    ts.push_back(bfile::make_f32("model.embed_tokens.weight", {vocab, h}, w.embed));
+    if (!drop_final_norm) ts.push_back(bfile::make_f32("model.norm.weight", {h}, w.final_rms));
+    for (int l = 0; l < w.num_layers; l++) {
+        const std::vector<uint32_t> q_shape = wrong_q
+            ? std::vector<uint32_t>{qd, h}      // 故意写成没转置的形状
+            : std::vector<uint32_t>{h, qd};
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "input_layernorm.weight"), {h}, w.rms1[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "self_attn.q_proj.weight"), q_shape, w.Wq[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "self_attn.k_proj.weight"), {h, kvd}, w.Wk[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "self_attn.v_proj.weight"), {h, kvd}, w.Wv[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "self_attn.o_proj.weight"), {qd, h}, w.Wo[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "post_attention_layernorm.weight"), {h}, w.rms2[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "mlp.gate_proj.weight"), {h, inter}, w.W1[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "mlp.down_proj.weight"), {inter, h}, w.W2[l]));
+        ts.push_back(bfile::make_f32(layer_tensor_name(l, "mlp.up_proj.weight"), {h, inter}, w.W3[l]));
+    }
+    ts.push_back(bfile::make_f32("lm_head.weight", {h, vocab}, w.lm_head));
+    bfile::write_bfile((dir / "model.bf").string(), head, ts);
+
+    json_lib info;
+    info.SetJsonWay((dir / "model_info.json").string());
+    info.WriteJsonKey("hidden_size", std::to_string(w.hidden));
+    info.WriteJsonKey("layer_count", std::to_string(w.num_layers));
+    info.WriteJsonKey("num_heads", std::to_string(w.num_heads));
+    info.WriteJsonKey("num_kv_heads", std::to_string(w.num_kv_heads));
+    info.WriteJsonKey("head_dim", std::to_string(w.head_dim));
+    info.WriteJsonKey("intermediate_size", std::to_string(w.intermediate));
+    info.WriteJsonKey("vocab_size", std::to_string(w.vocab));
+    info.WriteJsonKey("rope_theta", "10000");
+    info.WriteJsonKey("max_position_embeddings", std::to_string(w.max_seq));
+}
+
+// 从已经装好的 model.bf 里把权重抄成 gen_detail::gen_weights（走的是另一条路径，
+// 于是参考实现用的是文件里的值，引擎用的是 mmap 指针，两边对不上就会暴露）
+inline bool load_gen_weights(gen_detail::gen_weights& w, int max_seq) {
+    if (!bfile::current().ok) return false;
+    w.vocab = static_cast<int>(model.vocab_size);
+    w.hidden = static_cast<int>(model.h);
+    w.num_heads = model.num_heads;
+    w.num_kv_heads = model.num_kv_heads;
+    w.head_dim = model.head_dim;
+    w.intermediate = static_cast<int>(model.intermediate_size);
+    w.num_layers = static_cast<int>(model.l);
+    w.max_seq = max_seq;
+
+    const size_t h = static_cast<size_t>(w.hidden);
+    const size_t qd = static_cast<size_t>(w.num_heads) * w.head_dim;
+    const size_t kvd = static_cast<size_t>(w.num_kv_heads) * w.head_dim;
+    const size_t inter = static_cast<size_t>(w.intermediate);
+
+    auto grab = [](const std::string& name, std::vector<float>& dst, size_t count) -> bool {
+        const float* p = tensor_f32(name);
+        if (p == nullptr) return false;
+        dst.assign(p, p + count);
+        return true;
+    };
+
+    if (!grab("model.embed_tokens.weight", w.embed, h * static_cast<size_t>(w.vocab))) return false;
+    if (!grab("model.norm.weight", w.final_rms, h)) return false;
+    const float* lm = bind_lm_head(w.hidden, w.vocab);
+    if (lm == nullptr) return false;
+    w.lm_head.assign(lm, lm + h * static_cast<size_t>(w.vocab));
+
+    w.rms1.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.rms2.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.Wq.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.Wk.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.Wv.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.Wo.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.W1.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.W2.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+    w.W3.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
+
+    for (int l = 0; l < w.num_layers; l++) {
+        if (!grab(layer_tensor_name(l, "input_layernorm.weight"), w.rms1[l], h)) return false;
+        if (!grab(layer_tensor_name(l, "self_attn.q_proj.weight"), w.Wq[l], h * qd)) return false;
+        if (!grab(layer_tensor_name(l, "self_attn.k_proj.weight"), w.Wk[l], h * kvd)) return false;
+        if (!grab(layer_tensor_name(l, "self_attn.v_proj.weight"), w.Wv[l], h * kvd)) return false;
+        if (!grab(layer_tensor_name(l, "self_attn.o_proj.weight"), w.Wo[l], qd * h)) return false;
+        if (!grab(layer_tensor_name(l, "post_attention_layernorm.weight"), w.rms2[l], h)) return false;
+        if (!grab(layer_tensor_name(l, "mlp.gate_proj.weight"), w.W1[l], h * inter)) return false;
+        if (!grab(layer_tensor_name(l, "mlp.down_proj.weight"), w.W2[l], inter * h)) return false;
+        if (!grab(layer_tensor_name(l, "mlp.up_proj.weight"), w.W3[l], h * inter)) return false;
+    }
+
+    w.layers.assign(static_cast<size_t>(w.num_layers), LayerWeights{});
+    for (int l = 0; l < w.num_layers; l++) {
+        w.layers[l].rms1_weight = w.rms1[l].data();
+        w.layers[l].Wq = w.Wq[l].data();
+        w.layers[l].Wk = w.Wk[l].data();
+        w.layers[l].Wv = w.Wv[l].data();
+        w.layers[l].Wo = w.Wo[l].data();
+        w.layers[l].rms2_weight = w.rms2[l].data();
+        w.layers[l].W1 = w.W1[l].data();
+        w.layers[l].W2 = w.W2[l].data();
+        w.layers[l].W3 = w.W3[l].data();
+    }
+    rope_detail::make_tables(max_seq, w.head_dim, w.cos_t, w.sin_t);
+    return true;
+}
+
+}  // namespace pipe_detail
+
+bool check_bind_weights() {
+    namespace fs = std::filesystem;
+    using pipe_detail::load_gen_weights;
+    using pipe_detail::make_weights;
+    using pipe_detail::write_model_dir;
+
+    const int total = 9;
+    int passed = 0;
+    printf("==== 按名字装载权重测试 ====\n");
+
+    const fs::path root = fs::path("_file") / "bind_test";
+    const fs::path dir = root / "model";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+
+    const int vocab = 24, hidden = 8, heads = 2, kv = 1, head_dim = 4;
+    const int inter = 16, layers = 2, max_seq = 8;
+
+    gen_detail::gen_weights w;
+    make_weights(w, vocab, hidden, heads, kv, head_dim, inter, layers, max_seq);
+    write_model_dir(dir, w);
+
+    free_model_map();
+    bool loaded = false;
+    try {
+        install_model(dir);
+        loaded = bfile::current().ok;
+    } catch (const std::exception& e) {
+        printf("       ! install_model 抛异常: %s\n", e.what());
+    }
+
+    // ---------- 1. 装载 + 张量个数 ----------
+    {
+        const size_t want = 1 + static_cast<size_t>(layers) * 9 + 1 + 1;
+        const bool ok = loaded && bfile::current().tensor_count == want;
+        printf("[ 1/%d] install_model 成功，张量 %zu 个          %s\n", total, want, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 2. bind_layers 填的指针与 find_tensor 一致 ----------
+    {
+        std::vector<LayerWeights> got(static_cast<size_t>(layers));
+        std::string missing;
+        const bool bound = bind_layers(got.data(), layers, &missing);
+        bool ok = bound;
+        if (ok) ok = got[1].Wq == tensor_f32(layer_tensor_name(1, "self_attn.q_proj.weight"));
+        if (ok) ok = got[0].W2 == tensor_f32(layer_tensor_name(0, "mlp.down_proj.weight"));
+        if (ok) ok = got[1].rms2_weight == tensor_f32(layer_tensor_name(1, "post_attention_layernorm.weight"));
+        if (ok) ok = got[0].Wq != got[1].Wq;   // 两层不能指到同一块
+        if (!bound) printf("       ! bind_layers 失败于 %s\n", missing.c_str());
+        printf("[ 2/%d] 9 个权重指针都指到对应张量              %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 3. 从文件读回的数值与写入的一致 ----------
+    {
+        const float* embed = tensor_f32("model.embed_tokens.weight");
+        const float* wq = tensor_f32(layer_tensor_name(1, "self_attn.q_proj.weight"));
+        bool ok = embed != nullptr && wq != nullptr;
+        if (ok) ok = std::memcmp(embed, w.embed.data(), w.embed.size() * 4) == 0;
+        if (ok) ok = std::memcmp(wq, w.Wq[1].data(), w.Wq[1].size() * 4) == 0;
+        printf("[ 3/%d] embed / 第1层 Wq 数值逐字节一致          %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 4. bind_model 形状校验全过 ----------
+    pipeline::ModelRefs refs;
+    std::string err;
+    bool bound_model = false;
+    {
+        bound_model = pipeline::bind_model(refs, max_seq, &err);
+        if (!bound_model) printf("       ! %s\n", err.c_str());
+        printf("[ 4/%d] bind_model 形状校验全过                  %s\n", total, bound_model ? "OK" : "FAIL");
+        if (bound_model) passed++;
+    }
+
+    // ---------- 5. 参考实现也能从文件拿到权重 ----------
+    gen_detail::gen_weights ref;
+    bool ref_ok = false;
+    {
+        ref_ok = bound_model && load_gen_weights(ref, max_seq);
+        printf("[ 5/%d] 参考实现从同一份文件读出权重            %s\n", total, ref_ok ? "OK" : "FAIL");
+        if (ref_ok) passed++;
+    }
+
+    // ---------- 6. 引擎生成 vs double 参考 ----------
+    {
+        const int prompt[3] = {1, 2, 3};
+        std::vector<int> got(6, -1), want(6, -1);
+        int len_got = -1, len_want = -1;
+        if (ref_ok) {
+            len_got = generate(prompt, 3, nullptr, 0, refs.embed, refs.lm_head, refs.layers.data(),
+                               refs.num_layers, refs.final_norm, refs.rope.cos.data(),
+                               refs.rope.sin.data(), refs.max_seq, 3, 0.0f, refs.vocab_size,
+                               refs.hidden, refs.num_heads, refs.num_kv_heads, refs.head_dim,
+                               refs.intermediate, got.data());
+            len_want = gen_detail::reference_ids(ref, prompt, 3, 3, want.data());
+        }
+        bool ok = ref_ok && len_got == len_want;
+        if (ok) {
+            for (int i = 0; i < len_got; i++) {
+                if (got[i] != want[i]) ok = false;
+            }
+        }
+        printf("[ 6/%d] 生成结果与 double 参考一致 (实际", total);
+        for (int i = 3; i < len_got && i < 6; i++) printf(" %d", got[i]);
+        printf(" 期望");
+        for (int i = 3; i < len_want && i < 6; i++) printf(" %d", want[i]);
+        printf(")  %s\n", ok ? "OK" : "FAIL");
+        if (ok) {
+            passed++;
+        }
+    }
+
+    // ---------- 7. 形状写反（没转置）要能被拦住 ----------
+    {
+        const fs::path bad_dir = root / "wrong_shape";
+        gen_detail::gen_weights w6;
+        make_weights(w6, 24, 8, 2, 1, 6, 16, 1, max_seq);   // q_dim=12 != hidden=8
+        write_model_dir(bad_dir, w6, true, false);
+        free_model_map();
+        bool ok = false;
+        try {
+            install_model(bad_dir);
+            pipeline::ModelRefs bad_refs;
+            std::string bad_err;
+            const bool bound_bad = pipeline::bind_model(bad_refs, max_seq, &bad_err);
+            ok = !bound_bad && bad_err.find("q_proj") != std::string::npos;
+            if (!ok) printf("       ! 竟然通过了，错误信息: %s\n", bad_err.c_str());
+        } catch (const std::exception& e) {
+            printf("       ! 抛异常: %s\n", e.what());
+        }
+        printf("[ 7/%d] q_proj 形状写反 -> 报错并指出张量名      %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 8. 缺张量要报出缺哪个 ----------
+    {
+        const fs::path bad_dir = root / "missing";
+        gen_detail::gen_weights w8;
+        make_weights(w8, 24, 8, 2, 1, 4, 16, 1, max_seq);
+        write_model_dir(bad_dir, w8, false, true);   // 去掉 model.norm.weight
+        free_model_map();
+        bool ok = false;
+        try {
+            install_model(bad_dir);
+            pipeline::ModelRefs bad_refs;
+            std::string bad_err;
+            const bool bound_bad = pipeline::bind_model(bad_refs, max_seq, &bad_err);
+            ok = !bound_bad && bad_err.find("model.norm.weight") != std::string::npos;
+            if (!ok) printf("       ! 竟然通过了，错误信息: %s\n", bad_err.c_str());
+        } catch (const std::exception& e) {
+            printf("       ! 抛异常: %s\n", e.what());
+        }
+        printf("[ 8/%d] 缺 model.norm.weight -> 报出名字          %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 9. 贪心生成可复现 ----------
+    {
+        free_model_map();
+        install_model(dir);
+        pipeline::ModelRefs r2;
+        std::string e2;
+        bool ok = pipeline::bind_model(r2, max_seq, &e2);
+        const int prompt[3] = {5, 6, 7};
+        std::vector<int> a(6, -1), b(6, -1);
+        if (ok) {
+            const int la = generate(prompt, 3, nullptr, 0, r2.embed, r2.lm_head, r2.layers.data(),
+                                    r2.num_layers, r2.final_norm, r2.rope.cos.data(),
+                                    r2.rope.sin.data(), r2.max_seq, 3, 0.0f, r2.vocab_size,
+                                    r2.hidden, r2.num_heads, r2.num_kv_heads, r2.head_dim,
+                                    r2.intermediate, a.data());
+            const int lb = generate(prompt, 3, nullptr, 0, r2.embed, r2.lm_head, r2.layers.data(),
+                                    r2.num_layers, r2.final_norm, r2.rope.cos.data(),
+                                    r2.rope.sin.data(), r2.max_seq, 3, 0.0f, r2.vocab_size,
+                                    r2.hidden, r2.num_heads, r2.num_kv_heads, r2.head_dim,
+                                    r2.intermediate, b.data());
+            ok = (la == lb);
+            for (int i = 0; i < la && ok; i++) {
+                if (a[i] != b[i]) ok = false;
+            }
+        }
+        printf("[ 9/%d] 同一权重跑两次结果一致                  %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    free_model_map();
+    printf("check_bind_weights: %d/%d passed\n", passed, total);
+    return passed == total;
+}
+
+// ============================================================
+//  check_pipeline() —— 文本进 -> 文本出
+//
+//  演示模型：层权重全 0（残差把 embed 原样带过去），lm_head 输出“上一个字节 + 1”，
+//  所以输入 abcdefgh 必然得到 ijklmnopqrstuvwxy —— 可读、可断言
+// ============================================================
+bool check_pipeline() {
+    namespace fs = std::filesystem;
+
+    const int total = 10;
+    int passed = 0;
+    printf("==== 端到端（文本进 -> 文本出）测试 ====\n");
+
+    const fs::path root = fs::path("_file") / "pipe_test";
+    const fs::path src = root / "src";
+    const fs::path dir = root / "model";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+
+    converter::DemoSpec spec;
+    bool made = false;
+    try {
+        converter::make_demo_model(src.string(), spec);
+        converter::Options opt;
+        opt.sources.push_back((src / "model.safetensors").string());
+        opt.out_dir = dir.string();
+        opt.config_path = (src / "config.json").string();
+        opt.tokenizer_dir = src.string();
+        opt.verbose = false;
+        converter::convert(opt);
+        made = true;
+    } catch (const std::exception& e) {
+        printf("       ! 造/转模型失败: %s\n", e.what());
+    }
+
+    free_model_map();
+    pipeline::LoadedModel m;
+    std::string err;
+    const bool loaded = made && pipeline::load_model_dir(m, dir.string(), 64, &err);
+    if (!loaded) printf("       ! %s\n", err.empty() ? "装载失败" : err.c_str());
+
+    // ---------- 1. 装载成功 ----------
+    {
+        const bool ok = loaded && m.refs.num_layers == spec.layers
+            && m.refs.hidden == spec.hidden && m.refs.vocab_size == spec.vocab;
+        printf("[ 1/%d] 装载模型目录成功                        %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 2. 词表大小 = 256 字节 + bos/eos/unk ----------
+    {
+        const bool ok = loaded && m.tokenizer.vocab_size() == 259;
+        printf("[ 2/%d] 词表 %zu 个 token（256 字节 + 3 特殊）  %s\n", total,
+               loaded ? m.tokenizer.vocab_size() : 0, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 3. 英文往返 ----------
+    {
+        const std::string text = "Hello, JieYu AI!";
+        const std::string back = loaded ? m.tokenizer.decode(m.tokenizer.encode(text)) : "";
+        const bool ok = loaded && back == text;
+        printf("[ 3/%d] decode(encode(英文)) 还原原文            %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 4. 中文往返 ----------
+    {
+        const std::string text = "你好，世界！昆仑分词器。";
+        const std::string back = loaded ? m.tokenizer.decode(m.tokenizer.encode(text)) : "";
+        const bool ok = loaded && back == text;
+        printf("[ 4/%d] decode(encode(中文)) 还原原文            %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 5. encode 出的是字节 id ----------
+    {
+        const std::vector<int32_t> ids = loaded ? m.tokenizer.encode("abc") : std::vector<int32_t>();
+        const bool ok = loaded && ids.size() == 3 && ids[0] == 97 && ids[1] == 98 && ids[2] == 99;
+        printf("[ 5/%d] encode(\"abc\") = {97,98,99}              %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 6. 端到端：abcdefgh -> ijklmnopqrstuvwx ----------
+    {
+        std::string out;
+        const int produced = loaded ? pipeline::generate_text(m.tokenizer, "abcdefgh", m.refs, 16, 0.0f, out)
+                                    : -1;
+        const bool ok = loaded && out == "ijklmnopqrstuvwx" && produced == 16;
+        printf("[ 6/%d] abcdefgh -> %s (%d 个 token)   %s\n", total, out.c_str(), produced,
+               ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 7. 生成长度 = max_new ----------
+    {
+        std::string out;
+        const int produced = loaded ? pipeline::generate_text(m.tokenizer, "abc", m.refs, 5, 0.0f, out)
+                                    : -1;
+        const bool ok = loaded && produced == 5 && out == "defgh";
+        printf("[ 7/%d] max_new=5 就正好生成 5 个 (得到 %s)      %s\n", total, out.c_str(),
+               ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 8. 两次结果一致 ----------
+    {
+        std::string a, b;
+        if (loaded) {
+            pipeline::generate_text(m.tokenizer, "xyz", m.refs, 8, 0.0f, a);
+            pipeline::generate_text(m.tokenizer, "xyz", m.refs, 8, 0.0f, b);
+        }
+        const bool ok = loaded && !a.empty() && a == b;
+        printf("[ 8/%d] 同一提示词两次结果一致 (得到 %s)        %s\n", total, a.c_str(),
+               ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 9. 加不加 BOS 结果一样（BOS 行是零向量） ----------
+    {
+        std::string with_bos, without_bos;
+        if (loaded) {
+            pipeline::generate_text(m.tokenizer, "abc", m.refs, 4, 0.0f, with_bos, true);
+            pipeline::generate_text(m.tokenizer, "abc", m.refs, 4, 0.0f, without_bos, false);
+        }
+        const bool ok = loaded && !with_bos.empty() && with_bos == without_bos;
+        printf("[ 9/%d] 加不加 BOS 都不影响结果                  %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 10. 超长提示词被 max_seq 截住，不越界不崩 ----------
+    {
+        std::string out;
+        const std::string huge(200, 'k');
+        const int produced = loaded ? pipeline::generate_text(m.tokenizer, huge, m.refs, 16, 0.0f, out)
+                                    : -1;
+        const bool ok = loaded && produced == 0 && out.empty();
+        printf("[10/%d] 提示词 200 字符 > max_seq 64 -> 安全停下  %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    m.free();
+    printf("check_pipeline: %d/%d passed\n", passed, total);
     return passed == total;
 }
 

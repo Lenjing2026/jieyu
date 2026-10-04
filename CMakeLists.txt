@@ -38,7 +38,7 @@ target_include_directories(json_libs INTERFACE
 # BPE 分词器：libs/tokenizer/include/*.h（内部用相对路径包含 json_libs）
 add_library(tokenizer_headers INTERFACE)
 target_include_directories(tokenizer_headers INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/libs/tokenizer/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/tokenizer_libs/include
 )
 target_link_libraries(tokenizer_headers INTERFACE json_libs)
 
@@ -54,7 +54,13 @@ target_link_libraries(jieyu_headers INTERFACE json_libs tokenizer_headers)
 # ------------------------------------------------------------
 # 主程序
 # ------------------------------------------------------------
-add_executable(jieyu main.cpp)
+add_executable(jieyu main.cpp
+    libs/model_libs/silu/silu.h
+    libs/model_libs/ffn/ffn.h
+    libs/model_libs/forward.h
+    libs/model_libs/final_norm.h
+    libs/model_libs/lm_head.h
+    libs/model_libs/generate.h)
 
 # 让可执行文件直接产出到工程根目录，而不是藏在 build/ 里
 # （RUNTIME_OUTPUT_DIRECTORY 用于单配置生成器，带 _XXX 的用于 Visual Studio 这类多配置生成器）

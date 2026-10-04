@@ -2,6 +2,7 @@
 #define INSTALL_MODEL_H
 #include <bits/stdc++.h>
 #include <filesystem>
+#include "bfile.h"
 #include "../json_libs/json.h"
 #include "../mapp_libs/Windows_InMapp.h"
 #include "../date_libs/date.h"
@@ -38,6 +39,12 @@ void install_model(path model_path) {
     model.intermediate_size = *reinterpret_cast<uint32_t*>(static_cast<unsigned char*>(model.model_map) + 26);
     model.vocab_size = *reinterpret_cast<uint64_t*>(static_cast<unsigned char*>(model.model_map) + 30);
     info_file.close();
+    bfile::current().reset();
+    if (model.file_size >= bfile::kHeaderSize
+        && bfile::read_u32(static_cast<const unsigned char*>(model.model_map) + 38) >= bfile::kVersion) {
+        if (!bfile::current().open(model.model_map, static_cast<size_t>(model.file_size)))
+            throw std::runtime_error("model.bf tensor table broken");
+    }
 }
 
 #endif  // INSTALL_MODEL_H
