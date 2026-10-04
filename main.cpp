@@ -27,5 +27,10 @@ int main(){
     } else {
         cout << "部分测试失败！" << endl;
     }
+    if (check_bfile()) {
+        cout << "model.bf 测试通过！" << endl;
+    } else {
+        cout << "model.bf 测试失败！" << endl;
+    }
     return 0;
 }
