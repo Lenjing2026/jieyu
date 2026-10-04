@@ -1,8 +1,11 @@
+#ifndef MATMUL_H
+#define MATMUL_H
+
 #include "matmul_avx.h"
 #include "matmul_fma.h"
 #include "matmul_avx_fma.h"
 #include "../date_libs/check_cpu.h"
-void matmul(const int m,const int n,const int k,const float* A,const float* B,float* C) {
+void matmul_classic(const int m,const int n,const int k,const float* A,const float* B,float* C) {
     for (int i=0;i<m;i++) {
         for (int j=0;j<n;j++){
             float sum=0.0f;
@@ -13,7 +16,7 @@ void matmul(const int m,const int n,const int k,const float* A,const float* B,fl
         }
     }
 }
-void matmul_choose(const int m,const int n,const int k,const float* A,const float* B,float* C) {
+void matmul(const int m,const int n,const int k,const float* A,const float* B,float* C) {
     memset(C,0,sizeof(float)*m*n);
     if(cpu_can.avx && cpu_can.fma3)
         matmul_avx_fma(A,B,C,m,n,k);
@@ -22,6 +25,7 @@ void matmul_choose(const int m,const int n,const int k,const float* A,const floa
     else if(cpu_can.avx)
         matmul_avx(A,B,C,m,n,k);
     else
-        matmul(m,n,k,A,B,C);
+        matmul_classic(m,n,k,A,B,C);
 }
 //地狱绘图
+#endif  // MATMUL_H

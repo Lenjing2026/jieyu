@@ -32,5 +32,30 @@ int main(){
     } else {
         cout << "model.bf 测试失败！" << endl;
     }
+    if (check_ffn()) {
+        cout << "FFN 测试通过！" << endl;
+    } else {
+        cout << "FFN 测试失败！" << endl;
+    }
+    if (check_rope()) {
+        cout << "RoPE 测试通过！" << endl;
+    } else {
+        cout << "RoPE 测试失败！" << endl;
+    }
+    if (check_rmsnorm()) {
+        cout << "RMSNorm 测试通过！" << endl;
+    } else {
+        cout << "RMSNorm 测试失败！" << endl;
+    }
+    if (check_attention()) {
+        cout << "Attention 测试通过！" << endl;
+    } else {
+        cout << "Attention 测试失败！" << endl;
+    }
+    if (check_transformer_layer()) {
+        cout << "Transformer 整层测试通过！" << endl;
+    } else {
+        cout << "Transformer 整层测试失败！" << endl;
+    }
     return 0;
 }

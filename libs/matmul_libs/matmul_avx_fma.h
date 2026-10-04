@@ -1,3 +1,6 @@
+#ifndef MATMUL_AVX_FMA_H
+#define MATMUL_AVX_FMA_H
+
 #include<immintrin.h>
 __attribute__((target("avx2,fma")))
 void matmul_avx_fma(const float *a, const float *b, float *c, int m, int n, int k){
@@ -22,3 +25,4 @@ void matmul_avx_fma(const float *a, const float *b, float *c, int m, int n, int 
     }
 }
 //请输入文本
+#endif  // MATMUL_AVX_FMA_H
