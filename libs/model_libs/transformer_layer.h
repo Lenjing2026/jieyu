@@ -7,20 +7,24 @@
 #include "rope/rope.h"
 #include "silu/silu.h"
 void transformer_layer(
-    float* X,                    // [seq, hidden]，输入输出都在这里
-    const float* rms1_weight,    // [hidden]
-    const float* Wq,             // QKV + 输出投影
-    const float* Wk,
-    const float* Wv,
-    const float* Wo,
+    float* X,
+    const float* rms1_weight,
+    const WMat& Wq,
+    const WMat& Wk,
+    const WMat& Wv,
+    const WMat& Wo,
+    const float* bq,
+    const float* bk,
+    const float* bv,
     const float* cos_table,
     const float* sin_table,
-    const float* rms2_weight,    // [hidden]
-    const float* W1,             // FFN
-    const float* W2,
-    const float* W3,
+    const float* rms2_weight,
+    const WMat& W1,
+    const WMat& W2,
+    const WMat& W3,
     int seq, int hidden, int num_heads, int num_kv_heads,
     int head_dim, int intermediate,
+    int start_pos, float* cache_k, float* cache_v, int kv_cap,
     float eps=1e-5f
 ) {
     int q_dim=num_heads*head_dim;
@@ -33,38 +37,82 @@ void transformer_layer(
     std::vector<float> proj((size_t)seq*hidden);
     std::vector<float> ffn_out((size_t)seq*hidden);
 
-    // 1. RMSNorm
     for(int i=0;i<seq;i++)
         rmsnorm(X+(size_t)i*hidden,xn.data()+(size_t)i*hidden,rms1_weight,hidden,eps);
 
-    // 2. QKV 投影
-    matmul(seq,q_dim,hidden,xn.data(),Wq,Q.data());
-    matmul(seq,kv_dim,hidden,xn.data(),Wk,K.data());
-    matmul(seq,kv_dim,hidden,xn.data(),Wv,V.data());
+    matmul_w(Wq,seq,q_dim,hidden,xn.data(),Q.data());
+    matmul_w(Wk,seq,kv_dim,hidden,xn.data(),K.data());
+    matmul_w(Wv,seq,kv_dim,hidden,xn.data(),V.data());
 
-    // 3. RoPE
-    rope(Q.data(),seq,num_heads,head_dim,cos_table,sin_table);
-    rope(K.data(),seq,num_kv_heads,head_dim,cos_table,sin_table);
+    if(bq!=nullptr) for(int i=0;i<seq;i++) for(int j=0;j<q_dim;j++) Q[(size_t)i*q_dim+j]+=bq[j];
+    if(bk!=nullptr) for(int i=0;i<seq;i++) for(int j=0;j<kv_dim;j++) K[(size_t)i*kv_dim+j]+=bk[j];
+    if(bv!=nullptr) for(int i=0;i<seq;i++) for(int j=0;j<kv_dim;j++) V[(size_t)i*kv_dim+j]+=bv[j];
 
-    // 4. Attention
-    attention(Q.data(),K.data(),V.data(),attn.data(),seq,num_heads,num_kv_heads,head_dim);
+    rope_pos(Q.data(),seq,start_pos,num_heads,head_dim,cos_table,sin_table);
+    rope_pos(K.data(),seq,start_pos,num_kv_heads,head_dim,cos_table,sin_table);
 
-    // 5. 输出投影
-    matmul(seq,hidden,q_dim,attn.data(),Wo,proj.data());
+    attention_kv(Q.data(),K.data(),V.data(),attn.data(),seq,start_pos,
+                 num_heads,num_kv_heads,head_dim,cache_k,cache_v,kv_cap);
 
-    // 6. 残差
+    matmul_w(Wo,seq,hidden,q_dim,attn.data(),proj.data());
+
     for(size_t i=0;i<(size_t)seq*hidden;i++)
         X[i]+=proj[i];
 
-    // 7. RMSNorm
     for(int i=0;i<seq;i++)
         rmsnorm(X+(size_t)i*hidden,xn.data()+(size_t)i*hidden,rms2_weight,hidden,eps);
 
-    // 8. FFN
     ffn(xn.data(),W1,W2,W3,ffn_out.data(),seq,hidden,intermediate);
 
-    // 9. 残差
     for(size_t i=0;i<(size_t)seq*hidden;i++)
         X[i]+=ffn_out[i];
+}
+
+void transformer_layer(
+    float* X,
+    const float* rms1_weight,
+    const WMat& Wq,
+    const WMat& Wk,
+    const WMat& Wv,
+    const WMat& Wo,
+    const float* cos_table,
+    const float* sin_table,
+    const float* rms2_weight,
+    const WMat& W1,
+    const WMat& W2,
+    const WMat& W3,
+    int seq, int hidden, int num_heads, int num_kv_heads,
+    int head_dim, int intermediate,
+    float eps=1e-5f
+) {
+    transformer_layer(X,rms1_weight,Wq,Wk,Wv,Wo,nullptr,nullptr,nullptr,
+                      cos_table,sin_table,rms2_weight,W1,W2,W3,
+                      seq,hidden,num_heads,num_kv_heads,head_dim,intermediate,
+                      0,nullptr,nullptr,0,eps);
+}
+
+void transformer_layer(
+    float* X,
+    const float* rms1_weight,
+    const WMat& Wq,
+    const WMat& Wk,
+    const WMat& Wv,
+    const WMat& Wo,
+    const float* bq,
+    const float* bk,
+    const float* bv,
+    const float* cos_table,
+    const float* sin_table,
+    const float* rms2_weight,
+    const WMat& W1,
+    const WMat& W2,
+    const WMat& W3,
+    int seq, int hidden, int num_heads, int num_kv_heads,
+    int head_dim, int intermediate,
+    float eps=1e-5f
+) {
+    transformer_layer(X,rms1_weight,Wq,Wk,Wv,Wo,bq,bk,bv,cos_table,sin_table,rms2_weight,
+                      W1,W2,W3,seq,hidden,num_heads,num_kv_heads,head_dim,intermediate,
+                      0,nullptr,nullptr,0,eps);
 }
 #endif

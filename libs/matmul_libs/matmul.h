@@ -27,5 +27,4 @@ void matmul(const int m,const int n,const int k,const float* A,const float* B,fl
     else
         matmul_classic(m,n,k,A,B,C);
 }
-//地狱绘图
 #endif  // MATMUL_H

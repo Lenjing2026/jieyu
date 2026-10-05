@@ -2,6 +2,8 @@
 #define DATE_LIBS_DATE_H
 #include<bits/stdc++.h>
 #include<windows.h>
+#include"wmat.h"
+#include"../matmul_libs/matmul.h"
 using namespace std;
 using namespace std::filesystem;
 struct ModelInfo{
@@ -48,15 +50,46 @@ struct RoPETable{
         max_seq=head_dim=0;
     }
 } trif;
-struct LayerWeights {
+struct LayerWeights{
     const float* rms1_weight;
-    const float* Wq;
-    const float* Wk;
-    const float* Wv;
-    const float* Wo;
+    WMat Wq;
+    WMat Wk;
+    WMat Wv;
+    WMat Wo;
+    const float* bq;
+    const float* bk;
+    const float* bv;
     const float* rms2_weight;
-    const float* W1;
-    const float* W2;
-    const float* W3;
+    WMat W1;
+    WMat W2;
+    WMat W3;
+};
+struct __KVcache{
+    int num_layers,
+        max_seq,
+        num_kv_heads,
+        head_dim,
+        current_len;
+    std::vector<float> k;
+    std::vector<float> v;
+    void init(int l,int max_s,int nkh,int hd){
+        num_layers=l;
+        max_seq=max_s;
+        num_kv_heads=nkh;
+        head_dim=hd;
+        current_len=0;
+        size_t size=(size_t)num_layers*max_seq*num_kv_heads*head_dim;
+        k.assign(size,0.0f);
+        v.assign(size,0.0f);
+    }
+    void free(){current_len=0;} //我免费了！！！！！！！！！！！！！！
+    float* k_ptr(int l,int p){
+        size_t o=((size_t)l*max_seq+p)*num_kv_heads*head_dim;
+        return k.data()+o;
+    }
+    float* v_ptr(int l,int p){
+        size_t o=((size_t)l*max_seq+p)*num_kv_heads*head_dim;
+        return v.data()+o;
+    }
 };
 #endif  // DATE_LIBS_DATE_H

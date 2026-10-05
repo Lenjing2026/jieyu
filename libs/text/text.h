@@ -11,6 +11,7 @@
 //    check_attention()  因果 GQA 注意力（model_libs/attention/attention.h）
 //    check_transformer_layer()  整层前向端到端（model_libs/transformer_layer.h）
 //    check_generate()   自回归生成（model_libs/generate.h）
+//    check_kv_cache()   KV cache：分段算 == 整段算（date_libs/date.h + forward.h）
 //    check_tensor_dir() model.bf v2 张量目录（model_libs/bfile.h）
 //    check_convert()    safetensors -> model.bf 转换器（model_libs/converter.h）
 //    check_bind_weights() 按名字填 layers[]（model_libs/load_weights.h）
@@ -2127,6 +2128,266 @@ bool check_generate() {
 }
 
 // ============================================================
+//  check_kv_cache() —— KV cache
+//
+//  被测对象：date_libs/date.h        __KVcache
+//            attention/attention.h   attention_kv()
+//            transformer_layer.h     带 cache 的 transformer_layer()
+//            forward.h               forward_cached()
+//            generate.h              generate_cached() / generate()
+//
+//  关键保证：prefill 整段 + 逐 token 续算 与 每步整段重算 逐元素完全相同
+//            （因果注意力每步的加法顺序没变），所以生成的 token 一个都不差
+// ============================================================
+
+bool check_kv_cache() {
+    using namespace gen_detail;
+
+    const int total = 9;
+    int passed = 0;
+
+    printf("==== KV cache 测试 ====\n");
+
+    const int H = 8, NH = 2, NKV = 1, HD = 4, INTER = 16, NL = 2, MSEQ = 32, V = 16;
+    const int QDIM = NH * HD;
+    const int KVDIM = NKV * HD;
+    const int ids[4] = {2, 7, 11, 3};
+    const int N = 4;
+
+    gen_weights w;
+    w.build(V, H, NH, NKV, HD, INTER, NL, MSEQ, false);
+
+    const auto make_qkv = [&](std::vector<float>& Q, std::vector<float>& K, std::vector<float>& Vv) {
+        Q.assign((size_t)N * QDIM, 0.0f);
+        K.assign((size_t)N * KVDIM, 0.0f);
+        Vv.assign((size_t)N * KVDIM, 0.0f);
+        for (size_t i = 0; i < Q.size(); i++) Q[i] = ffn_detail::pseudo((int)i + 401);
+        for (size_t i = 0; i < K.size(); i++) K[i] = ffn_detail::pseudo((int)i + 503);
+        for (size_t i = 0; i < Vv.size(); i++) Vv[i] = ffn_detail::pseudo((int)i + 607);
+        rope_pos(Q.data(), N, 0, NH, HD, w.cos_t.data(), w.sin_t.data());
+        rope_pos(K.data(), N, 0, NKV, HD, w.cos_t.data(), w.sin_t.data());
+    };
+
+    // ---------- 1. attention 分两段 == 整段 ----------
+    {
+        std::vector<float> Q, K, Vv;
+        make_qkv(Q, K, Vv);
+        std::vector<float> full((size_t)N * QDIM, 0.0f);
+        attention_classic(Q.data(), K.data(), Vv.data(), full.data(), N, NH, NKV, HD);
+
+        __KVcache c;
+        c.init(NL, MSEQ, NKV, HD);
+        std::vector<float> got((size_t)N * QDIM, 0.0f);
+        for (int off = 0; off < N; off += 2) {
+            const int seg = (off + 2 <= N) ? 2 : (N - off);
+            std::vector<float> qs(Q.begin() + (size_t)off * QDIM, Q.begin() + (size_t)(off + seg) * QDIM);
+            std::vector<float> ks(K.begin() + (size_t)off * KVDIM, K.begin() + (size_t)(off + seg) * KVDIM);
+            std::vector<float> vs(Vv.begin() + (size_t)off * KVDIM, Vv.begin() + (size_t)(off + seg) * KVDIM);
+            std::vector<float> os((size_t)seg * QDIM, 0.0f);
+            attention_kv(qs.data(), ks.data(), vs.data(), os.data(), seg, off, NH, NKV, HD,
+                         c.k_ptr(0, 0), c.v_ptr(0, 0), c.max_seq);
+            for (size_t i = 0; i < os.size(); i++) got[(size_t)off * QDIM + i] = os[i];
+        }
+        bool ok = true;
+        for (size_t i = 0; i < got.size() && ok; i++)
+            if (got[i] != full[i]) ok = false;
+        printf("[1/%d] attention 分两段 == 整段（逐元素相同）      %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 2. cache 里存的就是 RoPE 之后的 K/V ----------
+    {
+        std::vector<float> Q, K, Vv;
+        make_qkv(Q, K, Vv);
+        __KVcache c;
+        c.init(NL, MSEQ, NKV, HD);
+        std::vector<float> out((size_t)N * QDIM, 0.0f);
+        attention_kv(Q.data(), K.data(), Vv.data(), out.data(), N, 0, NH, NKV, HD,
+                     c.k_ptr(0, 0), c.v_ptr(0, 0), c.max_seq);
+        bool ok = true;
+        for (size_t i = 0; i < K.size(); i++)
+            if (c.k[i] != K[i]) ok = false;
+        for (size_t i = 0; i < Vv.size(); i++)
+            if (c.v[i] != Vv[i]) ok = false;
+        for (size_t i = 0; i < (size_t)MSEQ * KVDIM; i++)
+            if (c.k_ptr(1, 0)[i] != 0.0f) ok = false;
+        printf("[2/%d] cache 里是 RoPE 后的 K/V，其它层没被动      %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 3. forward_cached 分两段 == forward 整段 ----------
+    {
+        const int cut = 2;
+        std::vector<float> Xf((size_t)N * H, 0.0f);
+        std::vector<float> Xa((size_t)cut * H, 0.0f);
+        std::vector<float> Xb((size_t)(N - cut) * H, 0.0f);
+        for (int i = 0; i < N; i++)
+            for (int d = 0; d < H; d++)
+                Xf[(size_t)i * H + d] = w.embed[(size_t)ids[i] * H + d];
+        for (int i = 0; i < cut; i++)
+            for (int d = 0; d < H; d++)
+                Xa[(size_t)i * H + d] = w.embed[(size_t)ids[i] * H + d];
+        for (int i = 0; i < N - cut; i++)
+            for (int d = 0; d < H; d++)
+                Xb[(size_t)i * H + d] = w.embed[(size_t)ids[cut + i] * H + d];
+
+        forward(Xf.data(), w.layers.data(), NL, w.final_rms.data(),
+                w.cos_t.data(), w.sin_t.data(), N, H, NH, NKV, HD, INTER);
+
+        __KVcache c;
+        c.init(NL, MSEQ, NKV, HD);
+        forward_cached(Xa.data(), w.layers.data(), NL, w.final_rms.data(),
+                       w.cos_t.data(), w.sin_t.data(), cut, 0, c, H, NH, NKV, HD, INTER);
+        forward_cached(Xb.data(), w.layers.data(), NL, w.final_rms.data(),
+                       w.cos_t.data(), w.sin_t.data(), N - cut, cut, c, H, NH, NKV, HD, INTER);
+
+        bool ok = true;
+        for (int i = 0; i < cut; i++)
+            for (int d = 0; d < H; d++)
+                if (Xa[(size_t)i * H + d] != Xf[(size_t)i * H + d]) ok = false;
+        for (int i = 0; i < N - cut; i++)
+            for (int d = 0; d < H; d++)
+                if (Xb[(size_t)i * H + d] != Xf[(size_t)(cut + i) * H + d]) ok = false;
+        printf("[3/%d] forward 分段 == 整段（逐元素相同）          %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 4. current_len 跟着每段推进 ----------
+    {
+        __KVcache c;
+        c.init(NL, MSEQ, NKV, HD);
+        std::vector<float> Xa((size_t)2 * H, 0.0f), Xb((size_t)2 * H, 0.0f);
+        forward_cached(Xa.data(), w.layers.data(), NL, w.final_rms.data(),
+                       w.cos_t.data(), w.sin_t.data(), 2, 0, c, H, NH, NKV, HD, INTER);
+        const bool after1 = (c.current_len == 2);
+        forward_cached(Xb.data(), w.layers.data(), NL, w.final_rms.data(),
+                       w.cos_t.data(), w.sin_t.data(), 2, 2, c, H, NH, NKV, HD, INTER);
+        const bool ok = after1 && (c.current_len == 4);
+        printf("[4/%d] cache.current_len 正确推进 (2 -> 4)        %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 5. 一个 token 一个 token 喂 == 整段最后一行 ----------
+    {
+        std::vector<float> Xf((size_t)N * H, 0.0f);
+        for (int i = 0; i < N; i++)
+            for (int d = 0; d < H; d++)
+                Xf[(size_t)i * H + d] = w.embed[(size_t)ids[i] * H + d];
+        forward(Xf.data(), w.layers.data(), NL, w.final_rms.data(),
+                w.cos_t.data(), w.sin_t.data(), N, H, NH, NKV, HD, INTER);
+
+        __KVcache c;
+        c.init(NL, MSEQ, NKV, HD);
+        std::vector<float> last;
+        for (int i = 0; i < N; i++) {
+            std::vector<float> Xi((size_t)H, 0.0f);
+            for (int d = 0; d < H; d++) Xi[d] = w.embed[(size_t)ids[i] * H + d];
+            forward_cached(Xi.data(), w.layers.data(), NL, w.final_rms.data(),
+                           w.cos_t.data(), w.sin_t.data(), 1, i, c, H, NH, NKV, HD, INTER);
+            if (i == N - 1) last = Xi;
+        }
+        bool ok = (last.size() == (size_t)H);
+        for (int d = 0; d < H && ok; d++)
+            if (last[d] != Xf[(size_t)(N - 1) * H + d]) ok = false;
+        printf("[5/%d] 逐 token 喂完 == 整段最后一行              %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 6. 长 prompt 走 cache == double 无 cache 参考 ----------
+    {
+        gen_weights w6;
+        w6.build(V, H, NH, NKV, HD, INTER, NL, MSEQ, false);
+        std::vector<int> prompt(12, 0), got(16, -1), want(16, -1);
+        for (int i = 0; i < 12; i++) prompt[i] = (i * 5 + 1) % V;
+        const int len_got = w6.run(prompt.data(), 12, 4, 0.0f, got.data());
+        const int len_want = reference_ids(w6, prompt.data(), 12, 4, want.data());
+        bool ok = (len_got == len_want);
+        for (int i = 0; i < len_got && ok; i++)
+            if (got[i] != want[i]) ok = false;
+        printf("[6/%d] prompt=12 走 cache == double 无 cache 参考   %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 7. 可复现 + EOS 提前停止 ----------
+    {
+        const int p3[3] = {1, 5, 9};
+        std::vector<int> a(6, -1), b(6, -1);
+        w.run(p3, 3, 3, 0.0f, a.data());
+        w.run(p3, 3, 3, 0.0f, b.data());
+        bool ok = (a == b);
+        const int eos = a[3];
+        std::vector<int> c(6, -1);
+        const int len = generate(p3, 3, &eos, 1, w.embed.data(), w.lm_head.data(),
+                                 w.layers.data(), NL, w.final_rms.data(),
+                                 w.cos_t.data(), w.sin_t.data(), MSEQ, 3, 0.0f,
+                                 V, H, NH, NKV, HD, INTER, c.data());
+        ok = ok && (len == 4 && c[3] == eos);
+        printf("[7/%d] 跑两次一致 + 命中 EOS 立即停 (len=%d)      %s\n", total, len, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 8. 容量不足 / 层数不符 / head 不整除 都要拦 ----------
+    {
+        bool ok_ovf = false, ok_lay = false, ok_hd = false;
+        try {
+            __KVcache c;
+            c.init(NL, MSEQ, NKV, HD);
+            std::vector<float> X((size_t)(MSEQ + 4) * H, 0.0f);
+            forward_cached(X.data(), w.layers.data(), NL, w.final_rms.data(),
+                           w.cos_t.data(), w.sin_t.data(), MSEQ, 4, c, H, NH, NKV, HD, INTER);
+        } catch (const std::exception& e) {
+            ok_ovf = (std::string(e.what()).find("容量") != std::string::npos);
+        }
+        try {
+            const int p3[3] = {1, 5, 9};
+            __KVcache c;
+            c.init(1, MSEQ, NKV, HD);
+            std::vector<int> o(6, -1);
+            generate_cached(p3, 3, nullptr, 0, w.embed.data(), w.lm_head.data(),
+                            w.layers.data(), NL, w.final_rms.data(),
+                            w.cos_t.data(), w.sin_t.data(), MSEQ, 1, 0.0f,
+                            V, H, NH, NKV, HD, INTER, c, o.data());
+        } catch (const std::exception& e) {
+            ok_lay = (std::string(e.what()).find("KV cache") != std::string::npos);
+        }
+        try {
+            std::vector<float> q((size_t)2 * 3 * HD, 0.0f), k((size_t)2 * 2 * HD, 0.0f);
+            std::vector<float> v((size_t)2 * 2 * HD, 0.0f), o((size_t)2 * 3 * HD, 0.0f);
+            attention_kv(q.data(), k.data(), v.data(), o.data(), 2, 0, 3, 2, HD,
+                         nullptr, nullptr, 0);
+        } catch (const std::exception& e) {
+            ok_hd = (std::string(e.what()).find("整除") != std::string::npos);
+        }
+        const bool ok = ok_ovf && ok_lay && ok_hd;
+        printf("[8/%d] 越界/层数不符/head 不整除 都抛异常         %s\n", total, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    // ---------- 9. 调用方自备 cache，可以复用 ----------
+    {
+        std::vector<int> prompt(12, 0), a(16, -1), b(16, -1);
+        for (int i = 0; i < 12; i++) prompt[i] = (i * 5 + 1) % V;
+        __KVcache c;
+        c.init(NL, MSEQ, NKV, HD);
+        const int len_a = generate_cached(prompt.data(), 12, nullptr, 0, w.embed.data(),
+                                          w.lm_head.data(), w.layers.data(), NL, w.final_rms.data(),
+                                          w.cos_t.data(), w.sin_t.data(), MSEQ, 4, 0.0f,
+                                          V, H, NH, NKV, HD, INTER, c, a.data());
+        const int len_b = generate_cached(prompt.data(), 12, nullptr, 0, w.embed.data(),
+                                          w.lm_head.data(), w.layers.data(), NL, w.final_rms.data(),
+                                          w.cos_t.data(), w.sin_t.data(), MSEQ, 4, 0.0f,
+                                          V, H, NH, NKV, HD, INTER, c, b.data());
+        const bool ok = (len_a == 16 && len_b == 16 && a == b && c.current_len == 15);
+        printf("[9/%d] 复用同一份 cache 两次结果一致 (len=%d, 缓存 %d 个)  %s\n",
+               total, len_a, c.current_len, ok ? "OK" : "FAIL");
+        if (ok) passed++;
+    }
+
+    printf("check_kv_cache: %d/%d passed\n", passed, total);
+    return passed == total;
+}
+
+// ============================================================
 //  check_tensor_dir() —— model.bf v2：张量目录 + 数据区
 //
 //  被测对象：libs/model_libs/bfile.h 的 write_bfile / View / read_header_file
@@ -2704,9 +2965,11 @@ inline bool load_gen_weights(gen_detail::gen_weights& w, int max_seq) {
 
     if (!grab("model.embed_tokens.weight", w.embed, h * static_cast<size_t>(w.vocab))) return false;
     if (!grab("model.norm.weight", w.final_rms, h)) return false;
-    const float* lm = bind_lm_head(w.hidden, w.vocab);
-    if (lm == nullptr) return false;
-    w.lm_head.assign(lm, lm + h * static_cast<size_t>(w.vocab));
+    const WMat lm = bind_lm_head(w.hidden, w.vocab);
+    if (lm.empty()) return false;
+    w.lm_head.assign(static_cast<size_t>(h) * w.vocab, 0.0f);
+    for (int r = 0; r < (int)h; r++)
+        wmat_row(lm, static_cast<size_t>(r), w.vocab, w.lm_head.data() + static_cast<size_t>(r) * w.vocab);
 
     w.rms1.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
     w.rms2.assign(static_cast<size_t>(w.num_layers), std::vector<float>());
@@ -2793,10 +3056,10 @@ bool check_bind_weights() {
         std::string missing;
         const bool bound = bind_layers(got.data(), layers, &missing);
         bool ok = bound;
-        if (ok) ok = got[1].Wq == tensor_f32(layer_tensor_name(1, "self_attn.q_proj.weight"));
-        if (ok) ok = got[0].W2 == tensor_f32(layer_tensor_name(0, "mlp.down_proj.weight"));
+        if (ok) ok = got[1].Wq.f == tensor_f32(layer_tensor_name(1, "self_attn.q_proj.weight"));
+        if (ok) ok = got[0].W2.f == tensor_f32(layer_tensor_name(0, "mlp.down_proj.weight"));
         if (ok) ok = got[1].rms2_weight == tensor_f32(layer_tensor_name(1, "post_attention_layernorm.weight"));
-        if (ok) ok = got[0].Wq != got[1].Wq;   // 两层不能指到同一块
+        if (ok) ok = got[0].Wq.f != got[1].Wq.f;   // 两层不能指到同一块
         if (!bound) printf("       ! bind_layers 失败于 %s\n", missing.c_str());
         printf("[ 2/%d] 9 个权重指针都指到对应张量              %s\n", total, ok ? "OK" : "FAIL");
         if (ok) passed++;

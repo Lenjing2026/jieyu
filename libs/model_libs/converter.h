@@ -175,6 +175,11 @@ inline bfile::StreamTensor make_sink(const safetensors::Info& src, bool transpos
     return sink;
 }
 
+// 二维权重跟 out_dtype，一维（norm / bias）永远 f32：它们太小，而且引擎按 f32 直接取
+inline uint8_t sink_dtype(const std::vector<uint32_t>& shape,uint8_t want){
+    return shape.size()==2?want:(uint8_t)bfile::F32;
+}
+
 // 从张量名字里数层数（model.layers.N.xxx）
 inline int count_layers(const std::vector<safetensors::Info>& list) {
     int layers = 0;
@@ -317,7 +322,7 @@ inline Result convert(const Options& opt) {
     std::vector<bfile::StreamTensor> sinks;
     sinks.reserve(list.size() + 1);
     for (const safetensors::Info& t : list) {
-        sinks.push_back(make_sink(t, need_transpose(t.name, t.shape), opt.out_dtype));
+        sinks.push_back(make_sink(t, need_transpose(t.name, t.shape), sink_dtype(t.shape, opt.out_dtype)));
         if (need_transpose(t.name, t.shape)) result.transposed += 1;
     }
     std::sort(sinks.begin(), sinks.end(),
@@ -338,7 +343,7 @@ inline Result convert(const Options& opt) {
             throw std::runtime_error("converter: embed_tokens 不是 2D，补不出 lm_head");
         }
         // 转置后 embed 就是 [hidden, vocab]，正是 lm_head 要的形状
-        bfile::StreamTensor sink = make_sink(*embed, true, opt.out_dtype);
+        bfile::StreamTensor sink = make_sink(*embed, true, sink_dtype(embed->shape, opt.out_dtype));
         sink.name = "lm_head.weight";
         sinks.push_back(sink);
         result.transposed += 1;

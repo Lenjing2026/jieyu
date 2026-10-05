@@ -6,7 +6,7 @@ struct cpu_dat{
     bool
     mmx,sse,sse2,sse3,
     ssse3,sse4_1,sse4_2,avx,
-    avx2,fma3,avx512f,avx512bw,
+    avx2,fma3,f16c,avx512f,avx512bw,
     avx512dq,avx512vnni,avx512vl,
     avx512bf16,amx,avxvnni,avx10;
     void GetCpuCan(){
@@ -20,6 +20,7 @@ struct cpu_dat{
         avx=__builtin_cpu_supports("avx");
         avx2=__builtin_cpu_supports("avx2");
         fma3=__builtin_cpu_supports("fma");
+        f16c=__builtin_cpu_supports("f16c");
         avx512f=__builtin_cpu_supports("avx512f");
         avx512bw=__builtin_cpu_supports("avx512bw");
         avx512dq=__builtin_cpu_supports("avx512dq");
@@ -41,6 +42,7 @@ void OutCPUInfo(cpu_dat cpu){
     printf("AVX: %s\n", cpu.avx ? "支持" : "不支持");
     printf("AVX2: %s\n", cpu.avx2 ? "支持" : "不支持");
     printf("FMA3: %s\n", cpu.fma3 ? "支持" : "不支持");
+    printf("F16C: %s\n", cpu.f16c ? "支持" : "不支持");
     printf("AVX-512F: %s\n", cpu.avx512f ? "支持" : "不支持");
     printf("AVX-512BW: %s\n", cpu.avx512bw ? "支持" : "不支持");
     printf("AVX-512DQ: %s\n", cpu.avx512dq ? "支持" : "不支持");

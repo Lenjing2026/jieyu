@@ -53,7 +53,7 @@ inline constexpr size_t kAlign = 64;
 inline constexpr uint32_t kMaxDim = 4;
 inline constexpr size_t kMaxName = 63;
 
-enum dtype_t : uint8_t { F32 = 0, F16 = 1, BF16 = 2, I8 = 3, I32 = 4 };
+enum dtype_t : uint8_t { F32 = 0, F16 = 1, BF16 = 2, I8 = 3, I32 = 4, Q4K = 5, Q5K = 6, Q6K = 7, Q8_0 = 8 };
 
 inline size_t dtype_bytes(uint8_t d) {
     switch (d) {
@@ -64,6 +64,35 @@ inline size_t dtype_bytes(uint8_t d) {
     }
 }
 
+// 块量化：一个块几个元素 / 几字节；不是块量化就返回 0
+inline size_t block_elems(uint8_t d) {
+    switch (d) {
+        case Q4K: case Q5K: case Q6K: return 256;
+        case Q8_0: return 32;
+        default: return 0;
+    }
+}
+
+inline size_t block_bytes(uint8_t d) {
+    switch (d) {
+        case Q4K: return 144;
+        case Q5K: return 176;
+        case Q6K: return 210;
+        case Q8_0: return 34;
+        default: return 0;
+    }
+}
+
+inline bool dtype_known(uint8_t d) { return dtype_bytes(d) != 0 || block_elems(d) != 0; }
+
+// 一张张量占多少字节；组合不合法返回 0
+inline size_t tensor_bytes(uint8_t d, uint64_t elems) {
+    const size_t be = block_elems(d);
+    if (be == 0) return elems * dtype_bytes(d);
+    if (elems % be != 0) return 0;
+    return (elems / be) * block_bytes(d);
+}
+
 inline const char* dtype_name(uint8_t d) {
     switch (d) {
         case F32: return "f32";
@@ -71,6 +100,10 @@ inline const char* dtype_name(uint8_t d) {
         case BF16: return "bf16";
         case I8: return "i8";
         case I32: return "i32";
+        case Q4K: return "q4_K";
+        case Q5K: return "q5_K";
+        case Q6K: return "q6_K";
+        case Q8_0: return "q8_0";
         default: return "?";
     }
 }
@@ -85,6 +118,10 @@ inline int dtype_of(const std::string& s) {
     if (t == "F16" || t == "FLOAT16" || t == "HALF") return F16;
     if (t == "BF16" || t == "BFLOAT16") return BF16;
     if (t == "I8" || t == "INT8") return I8;
+    if (t == "Q4K" || t == "Q4_K") return Q4K;
+    if (t == "Q5K" || t == "Q5_K") return Q5K;
+    if (t == "Q6K" || t == "Q6_K") return Q6K;
+    if (t == "Q8_0" || t == "Q80") return Q8_0;
     return -1;
 }
 
@@ -169,8 +206,8 @@ struct View {
         for (uint32_t i = 0; i < tensor_count; i++) {
             const Entry& e = *entry(i);
             if (e.ndim > kMaxDim) return false;
-            if (dtype_bytes(e.dtype) == 0) return false;
-            if (entry_elems(e) * dtype_bytes(e.dtype) != e.nbytes) return false;
+            if (!dtype_known(e.dtype)) return false;
+            if (tensor_bytes(e.dtype, entry_elems(e)) != e.nbytes) return false;
             if (e.offset % kAlign != 0) return false;
             if (data_off + e.offset + e.nbytes > bytes) return false;
         }
@@ -275,12 +312,12 @@ inline void check_tensor_meta(const std::string& name, uint8_t dtype,
     if (shape.size() > kMaxDim) {
         throw std::runtime_error("bfile: 维度超过 4: " + name);
     }
-    if (dtype_bytes(dtype) == 0) {
+    if (!dtype_known(dtype)) {
         throw std::runtime_error("bfile: 不认识的 dtype: " + name);
     }
     uint64_t elems = 1;
     for (uint32_t s : shape) elems *= s;
-    if (elems * dtype_bytes(dtype) != nbytes) {
+    if (tensor_bytes(dtype, elems) != nbytes) {
         throw std::runtime_error("bfile: shape 与数据长度不符: " + name);
     }
 }
@@ -395,10 +432,10 @@ inline void read_header_file(const std::string& path, Header& h, std::vector<Ent
         if (f.gcount() != want) throw std::runtime_error("bfile: 目录被截断: " + path);
     }
     for (const Entry& e : dir) {
-        if (e.ndim > kMaxDim || dtype_bytes(e.dtype) == 0) {
+        if (e.ndim > kMaxDim || !dtype_known(e.dtype)) {
             throw std::runtime_error("bfile: 目录项不合法: " + std::string(e.name));
         }
-        if (entry_elems(e) * dtype_bytes(e.dtype) != e.nbytes) {
+        if (tensor_bytes(e.dtype, entry_elems(e)) != e.nbytes) {
             throw std::runtime_error("bfile: 目录项 shape 与 nbytes 不符: " + std::string(e.name));
         }
         if (e.offset % kAlign != 0) {

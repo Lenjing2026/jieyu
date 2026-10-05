@@ -37,6 +37,27 @@ inline const float* tensor_f32(const std::string& name) {
     return bfile::current().f32(e);
 }
 
+inline int wmat_qt(uint8_t d) {
+    switch (d) {
+        case bfile::Q4K: return qmat::Q4K;
+        case bfile::Q5K: return qmat::Q5K;
+        case bfile::Q6K: return qmat::Q6K;
+        case bfile::Q8_0: return qmat::Q8_0;
+        default: return -1;
+    }
+}
+
+// f32 / f16 / 块量化 都能取；取不到就是空的 WMat
+inline WMat tensor_wmat(const std::string& name) {
+    const bfile::Entry* e = find_tensor(name);
+    if (e == nullptr) return WMat();
+    if (e->dtype == bfile::F32) return WMat(bfile::current().f32(e));
+    if (e->dtype == bfile::F16) return WMat((const uint16_t*)bfile::current().data(e));
+    const int qt = wmat_qt(e->dtype);
+    if (qt >= 0) return WMat(bfile::current().data(e), (uint8_t)qt);
+    return WMat();
+}
+
 inline std::string layer_tensor_name(int layer, const char* suffix) {
     return "model.layers." + std::to_string(layer) + "." + suffix;
 }
@@ -83,6 +104,19 @@ inline void set_layer_slot(LayerWeights& w, int index, const float* p) {
     }
 }
 
+inline void set_layer_wmat(LayerWeights& w, int index, const WMat& m) {
+    switch (index) {
+        case 1: w.Wq = m; break;
+        case 2: w.Wk = m; break;
+        case 3: w.Wv = m; break;
+        case 4: w.Wo = m; break;
+        case 6: w.W1 = m; break;
+        case 7: w.W2 = m; break;
+        case 8: w.W3 = m; break;
+        default: break;
+    }
+}
+
 // 把 layers[0..num_layers) 全部填上指针；缺哪个就返回 false 并记在 missing
 inline bool bind_layers(LayerWeights* layers, int num_layers, std::string* missing = nullptr) {
     if (layers == nullptr || num_layers <= 0) return false;
@@ -90,35 +124,60 @@ inline bool bind_layers(LayerWeights* layers, int num_layers, std::string* missi
         LayerWeights w = {};
         for (int k = 0; k < 9; k++) {
             const std::string name = layer_tensor_name(l, layer_suffix(k));
-            const float* p = tensor_f32(name);
-            if (p == nullptr) {
-                if (missing != nullptr) *missing = name;
-                return false;
+            if (k == 0 || k == 5) {
+                const float* p = tensor_f32(name);
+                if (p == nullptr) {
+                    if (missing != nullptr) *missing = name;
+                    return false;
+                }
+                set_layer_slot(w, k, p);
+            } else {
+                const WMat m = tensor_wmat(name);
+                if (m.empty()) {
+                    if (missing != nullptr) *missing = name;
+                    return false;
+                }
+                set_layer_wmat(w, k, m);
             }
-            set_layer_slot(w, k, p);
         }
         layers[l] = w;
     }
     return true;
 }
 
-inline const float* bind_embed() {
-    return tensor_f32("model.embed_tokens.weight");
+inline WMat bind_embed() {
+    return tensor_wmat("model.embed_tokens.weight");
+}
+
+inline bool bind_biases(LayerWeights* layers, int num_layers) {
+    if (layers == nullptr || num_layers <= 0) return false;
+    for (int l = 0; l < num_layers; l++) {
+        layers[l].bq = tensor_f32(layer_tensor_name(l, "self_attn.q_proj.bias"));
+        layers[l].bk = tensor_f32(layer_tensor_name(l, "self_attn.k_proj.bias"));
+        layers[l].bv = tensor_f32(layer_tensor_name(l, "self_attn.v_proj.bias"));
+    }
+    return layers[0].bq != nullptr;
 }
 
 inline const float* bind_final_norm() {
     return tensor_f32("model.norm.weight");
 }
 
-// lm_head 缺失时退回 embed（只当形状正好是 [hidden, vocab] 才收，免得静默算错）
-inline const float* bind_lm_head(int hidden, int vocab) {
+// lm_head 缺失时退回 embed。普通浮点是转置过的 [hidden,vocab]；
+// 量化权重是“行=输出”的 [vocab,hidden]，embed 正好就是
+inline WMat bind_lm_head(int hidden, int vocab) {
     const bfile::Entry* e = find_tensor("lm_head.weight");
     if (e == nullptr) e = find_tensor("model.embed_tokens.weight");
-    if (e == nullptr || e->dtype != bfile::F32) return nullptr;
-    if (e->ndim != 2) return nullptr;
-    if (e->shape[0] != static_cast<uint64_t>(hidden)) return nullptr;
-    if (e->shape[1] != static_cast<uint64_t>(vocab)) return nullptr;
-    return bfile::current().f32(e);
+    if (e == nullptr || e->ndim != 2) return WMat();
+    if (bfile::block_elems(e->dtype) != 0) {
+        if (e->shape[0] != static_cast<uint64_t>(vocab)) return WMat();
+        if (e->shape[1] != static_cast<uint64_t>(hidden)) return WMat();
+    } else {
+        if (e->dtype != bfile::F32 && e->dtype != bfile::F16) return WMat();
+        if (e->shape[0] != static_cast<uint64_t>(hidden)) return WMat();
+        if (e->shape[1] != static_cast<uint64_t>(vocab)) return WMat();
+    }
+    return tensor_wmat(e->name);
 }
 
 #endif  // LOAD_WEIGHTS_H

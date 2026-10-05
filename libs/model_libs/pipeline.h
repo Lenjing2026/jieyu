@@ -36,13 +36,15 @@
 namespace pipeline {
 
 struct ModelRefs {
-    const float* embed = nullptr;
-    const float* lm_head = nullptr;
+    WMat embed;
+    WMat lm_head;
     const float* final_norm = nullptr;
     std::vector<LayerWeights> layers;
     RoPETable rope;
     int num_layers = 0, hidden = 0, num_heads = 0, num_kv_heads = 0;
     int head_dim = 0, intermediate = 0, vocab_size = 0, max_seq = 0;
+    bool qkv_bias = false;
+    bool add_bos = true;
     int q_dim() const { return num_heads * head_dim; }
     int kv_dim() const { return num_kv_heads * head_dim; }
     void free() {
@@ -51,10 +53,14 @@ struct ModelRefs {
     }
 };
 
-inline float read_rope_theta(const std::filesystem::path& info_path) {
+inline int read_info_int(const std::filesystem::path& info_path, const char* key, int fallback) {
     json_libs::json_lib j;
-    if (!j.SetJsonWay(info_path.string())) return 10000.0f;
-    return static_cast<float>(j.GetJsonInt("rope_theta", 10000));
+    if (!j.SetJsonWay(info_path.string())) return fallback;
+    return j.GetJsonInt(key, fallback);
+}
+
+inline float read_rope_theta(const std::filesystem::path& info_path) {
+    return static_cast<float>(read_info_int(info_path, "rope_theta", 10000));
 }
 
 inline bool bind_model(ModelRefs& m, int max_seq = 1024, std::string* error = nullptr) {
@@ -82,10 +88,11 @@ inline bool bind_model(ModelRefs& m, int max_seq = 1024, std::string* error = nu
     if (!bind_layers(m.layers.data(), m.num_layers, &missing)) {
         return fail("缺少张量: " + missing);
     }
+    m.qkv_bias = bind_biases(m.layers.data(), m.num_layers);
     m.embed = bind_embed();
-    if (m.embed == nullptr) return fail("缺少张量: model.embed_tokens.weight");
+    if (m.embed.empty()) return fail("缺少张量: model.embed_tokens.weight");
     m.lm_head = bind_lm_head(m.hidden, m.vocab_size);
-    if (m.lm_head == nullptr) {
+    if (m.lm_head.empty()) {
         return fail("lm_head.weight 缺失或形状不是 [hidden, vocab]（权重共享时需要转换器补一份转置副本）");
     }
     m.final_norm = bind_final_norm();
@@ -97,17 +104,23 @@ inline bool bind_model(ModelRefs& m, int max_seq = 1024, std::string* error = nu
         std::string name;
         std::vector<int64_t> shape;
     };
+    // 普通浮点权重的内存是 [in,out]（转换时转置过）；块量化是 [out,in]（行就是输出）
+    auto want_w = [&](const std::string& name, int in, int out) -> std::vector<int64_t> {
+        const bfile::Entry* t = find_tensor(name);
+        if (t != nullptr && bfile::block_elems(t->dtype) != 0) return {out, in};
+        return {in, out};
+    };
     const Expect checks[] = {
         {"model.embed_tokens.weight", {m.vocab_size, m.hidden}},
         {"model.norm.weight", {m.hidden}},
         {layer_tensor_name(0, "input_layernorm.weight"), {m.hidden}},
-        {layer_tensor_name(0, "self_attn.q_proj.weight"), {m.hidden, q}},
-        {layer_tensor_name(0, "self_attn.k_proj.weight"), {m.hidden, kv}},
-        {layer_tensor_name(0, "self_attn.v_proj.weight"), {m.hidden, kv}},
-        {layer_tensor_name(0, "self_attn.o_proj.weight"), {q, m.hidden}},
-        {layer_tensor_name(0, "mlp.gate_proj.weight"), {m.hidden, m.intermediate}},
-        {layer_tensor_name(0, "mlp.up_proj.weight"), {m.hidden, m.intermediate}},
-        {layer_tensor_name(0, "mlp.down_proj.weight"), {m.intermediate, m.hidden}},
+        {layer_tensor_name(0, "self_attn.q_proj.weight"), want_w(layer_tensor_name(0, "self_attn.q_proj.weight"), m.hidden, q)},
+        {layer_tensor_name(0, "self_attn.k_proj.weight"), want_w(layer_tensor_name(0, "self_attn.k_proj.weight"), m.hidden, kv)},
+        {layer_tensor_name(0, "self_attn.v_proj.weight"), want_w(layer_tensor_name(0, "self_attn.v_proj.weight"), m.hidden, kv)},
+        {layer_tensor_name(0, "self_attn.o_proj.weight"), want_w(layer_tensor_name(0, "self_attn.o_proj.weight"), q, m.hidden)},
+        {layer_tensor_name(0, "mlp.gate_proj.weight"), want_w(layer_tensor_name(0, "mlp.gate_proj.weight"), m.hidden, m.intermediate)},
+        {layer_tensor_name(0, "mlp.up_proj.weight"), want_w(layer_tensor_name(0, "mlp.up_proj.weight"), m.hidden, m.intermediate)},
+        {layer_tensor_name(0, "mlp.down_proj.weight"), want_w(layer_tensor_name(0, "mlp.down_proj.weight"), m.intermediate, m.hidden)},
     };
     for (const Expect& e : checks) {
         if (shape_is(e.name, e.shape)) continue;
@@ -128,6 +141,17 @@ inline bool bind_model(ModelRefs& m, int max_seq = 1024, std::string* error = nu
         return fail(e.name + " 形状是 " + got + "，期望 " + want + "（2D 权重需要转置）");
     }
 
+    const Expect bias_checks[] = {
+        {layer_tensor_name(0, "self_attn.q_proj.bias"), {q}},
+        {layer_tensor_name(0, "self_attn.k_proj.bias"), {kv}},
+        {layer_tensor_name(0, "self_attn.v_proj.bias"), {kv}},
+    };
+    for (const Expect& e : bias_checks) {
+        if (find_tensor(e.name) == nullptr) continue;
+        if (!shape_is(e.name, e.shape)) return fail("张量形状不对: " + e.name);
+    }
+
+    m.add_bos = read_info_int(model.model_info, "add_bos_token", 1) != 0;
     m.rope.init(m.max_seq, m.head_dim, read_rope_theta(model.model_info));
     return true;
 }
@@ -148,10 +172,32 @@ inline size_t utf8_whole_bytes(const std::string& s) {
     return n;
 }
 
+// 流式输出用：每来一个 token 就解码、拼 out、能凑成完整 UTF-8 就立刻吐给 echo
+struct EchoSink {
+    const json_libs::Tokenizer* tok;
+    std::string* out;
+    std::ostream* echo;
+    std::string pending;
+};
+inline void echo_token(int id, void* ud) {
+    EchoSink* s = static_cast<EchoSink*>(ud);
+    const std::vector<int32_t> one(1, id);
+    const std::string piece = s->tok->decode(one);
+    *s->out += piece;
+    if (s->echo == nullptr) return;
+    s->pending += piece;
+    const size_t whole = utf8_whole_bytes(s->pending);
+    if (whole > 0) {
+        *s->echo << s->pending.substr(0, whole) << std::flush;
+        s->pending.erase(0, whole);
+    }
+}
+
 // 返回新生成的 token 个数；出错返回 -1
 inline int generate_text(const json_libs::Tokenizer& tok, const std::string& prompt, const ModelRefs& m,
                          int max_new, float temperature, std::string& out,
-                         bool add_bos = true, std::ostream* echo = nullptr) {
+                         bool add_bos = true, std::ostream* echo = nullptr,
+                         float repetition_penalty = 1.0f) {
     std::vector<int32_t> ids = tok.encode(prompt);
     const int32_t bos = tok.bos_id();
     if (add_bos && bos >= 0 && bos < m.vocab_size) ids.insert(ids.begin(), bos);
@@ -185,27 +231,18 @@ inline int generate_text(const json_libs::Tokenizer& tok, const std::string& pro
     const int32_t eos = tok.eos_id();
     const int32_t eos_list[1] = {eos};
     const int32_t* eos_ptr = (eos >= 0 && eos < m.vocab_size) ? eos_list : nullptr;
+    out.clear();
+    EchoSink sink{&tok, &out, echo, std::string()};
     const int len = generate(in_ids.data(), prompt_len, eos_ptr, (eos_ptr != nullptr) ? 1 : 0,
                              m.embed, m.lm_head, m.layers.data(), m.num_layers, m.final_norm,
                              m.rope.cos.data(), m.rope.sin.data(), m.max_seq, max_new,
                              temperature, m.vocab_size, m.hidden, m.num_heads, m.num_kv_heads,
-                             m.head_dim, m.intermediate, out_ids.data());
-    out.clear();
-    std::string pending;
-    for (int i = prompt_len; i < len; i++) {
-        const std::vector<int32_t> one(1, out_ids[i]);
-        const std::string piece = tok.decode(one);
-        out += piece;
-        if (echo == nullptr) continue;
-        pending += piece;
-        const size_t whole = utf8_whole_bytes(pending);
-        if (whole > 0) {
-            *echo << pending.substr(0, whole) << std::flush;
-            pending.erase(0, whole);
-        }
+                             m.head_dim, m.intermediate, out_ids.data(), repetition_penalty,
+                             echo_token, &sink);
+    if (echo != nullptr) {
+        if (!sink.pending.empty()) *echo << sink.pending;
+        *echo << std::endl;
     }
-    if (echo != nullptr && !pending.empty()) *echo << pending;
-    if (echo != nullptr) *echo << std::endl;
     return len - prompt_len;
 }
 
@@ -279,7 +316,7 @@ inline std::string acp_to_utf8(const std::string& text) {
 // ------------------------------------------------------------
 //  交互式：一行一行读，生成一段就打印一段
 // ------------------------------------------------------------
-inline int run_chat(LoadedModel& m, int max_new, float temperature) {
+inline int run_chat(LoadedModel& m, int max_new, float temperature, float repetition_penalty = 1.1f) {
     std::cout << "模型已装载：" << m.dir << "\n";
     std::cout << "  hidden=" << m.refs.hidden << " layers=" << m.refs.num_layers
               << " heads=" << m.refs.num_heads << " kv=" << m.refs.num_kv_heads
@@ -297,7 +334,7 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature) {
         if (prompt.empty()) continue;
         std::string out;
         const int produced = generate_text(m.tokenizer, prompt, m.refs, max_new, temperature,
-                                           out, true, &std::cout);
+                                           out, m.refs.add_bos, &std::cout, repetition_penalty);
         if (produced < 0) {
             std::cout << "(生成失败)" << std::endl;
         }
@@ -307,10 +344,11 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature) {
 }
 
 // 一次性：给一句提示词，生成完打印
-inline int run_once(LoadedModel& m, const std::string& prompt, int max_new, float temperature) {
+inline int run_once(LoadedModel& m, const std::string& prompt, int max_new, float temperature,
+                    float repetition_penalty = 1.1f) {
     std::string out;
     const int produced = generate_text(m.tokenizer, prompt, m.refs, max_new, temperature,
-                                       out, true, &std::cout);
+                                       out, m.refs.add_bos, &std::cout, repetition_penalty);
     if (produced <= 0) {
         std::cout << "(没有生成任何 token)" << std::endl;
         return produced;

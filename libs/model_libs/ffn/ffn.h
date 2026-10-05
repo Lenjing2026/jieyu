@@ -1,17 +1,17 @@
 #ifndef _HPP_PNG
 #define _HPP_PNG
-#include "../../matmul_libs/matmul.h"
+#include "../wmat_kernel.h"
 #include "../silu/silu.h"
 #include<vector>
-void ffn(float* x,const float* w1,const float* w2,const float* w3,
+void ffn(float* x,const WMat& w1,const WMat& w2,const WMat& w3,
          float* out, int seq,int hidden,int intermediate){
     std::vector<float> gate(seq*intermediate);
     std::vector<float> up(seq*intermediate);
-    matmul(seq,intermediate,hidden,x,w1,gate.data());
-    matmul(seq,intermediate,hidden,x,w3,up.data());
+    matmul_w(w1,seq,intermediate,hidden,x,gate.data());
+    matmul_w(w3,seq,intermediate,hidden,x,up.data());
     silu(gate.data(),gate.data(),seq*intermediate);
     for(int i=0;i<seq*intermediate;i++)
         gate[i]=gate[i]*up[i];
-    matmul(seq,hidden,intermediate,gate.data(),w2,out);       
+    matmul_w(w2,seq,hidden,intermediate,gate.data(),out);
 }
 #endif
