@@ -5,12 +5,7 @@
 #include <string>
 #include "../date_libs/wmat.h"
 #include "../matmul_libs/matmul_q.h"
-#include "../date_libs/date.h"  // 顺带拿到 <windows.h>、model（映射基址）
-
-// 权重预热：mmap 的硬页错误是 4KB 一次、一次 ~50µs，980MB 光等盘就十几秒，
-// 而盘顺序读能到 2GB/s。所以改用大块 ReadFile 把"接下来要用的那段"先捂进页缓存
-// （每层约 26MB，十几毫秒），算的时候只剩软错误（~1µs）。
-// 对不上映射的（测试里现造的权重、非 Windows）静默跳过，绝不影响正确性。
+#include "../date_libs/date.h"
 namespace prefetch {
 
 #ifdef _WIN32
@@ -21,7 +16,6 @@ inline HANDLE open_model_bf() {
                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 }
-// 模型目录换过（测试里反复 install_model）就换句柄
 inline HANDLE get_handle() {
     static HANDLE h = INVALID_HANDLE_VALUE;
     static std::string cur;
@@ -41,7 +35,6 @@ inline void* get_scratch() {
 inline void range(const void* p, size_t bytes) {
 #ifdef _WIN32
     if (p == nullptr || bytes == 0) return;
-    // 用整数比较：测试里传进来的可能是堆上的权重，和映射没有可比性
     const uintptr_t base = (uintptr_t)model.model_map;
     const uintptr_t q = (uintptr_t)p;
     if (base == 0 || q < base) return;
@@ -74,7 +67,6 @@ inline const void* data_of(const WMat& w) {
     return w.q;
 }
 
-// rows 行、每行 cols 个元素（量化按块算，行 = 输出）
 inline size_t bytes_of(const WMat& w, size_t rows, size_t cols) {
     if (data_of(w) == nullptr) return 0;
     if (w.q != nullptr) {
@@ -84,7 +76,6 @@ inline size_t bytes_of(const WMat& w, size_t rows, size_t cols) {
     return rows * cols * ((w.h != nullptr) ? 2u : 4u);
 }
 
-// 一整层的 7 个权重一次丢出去
 inline void layer(const LayerWeights& w, size_t hidden, size_t q_dim, size_t kv_dim, size_t inter) {
     range(data_of(w.Wq), bytes_of(w.Wq, q_dim, hidden));
     range(data_of(w.Wk), bytes_of(w.Wk, kv_dim, hidden));

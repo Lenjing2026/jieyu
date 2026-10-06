@@ -15,7 +15,6 @@ inline void matmul_w(const WMat& B,const int m,const int n,const int k,const flo
     else matmul_f16_classic(A,B.h,C,m,n,k);
 }
 
-// 取整整一行（f32 / f16 / 块量化都行）。量化权重的行号就是输出号
 inline void wmat_row(const WMat& w,size_t id,int width,float* dst){
     if(w.f!=nullptr){ memcpy(dst,w.f+id*(size_t)width,(size_t)width*sizeof(float)); return; }
     if(w.h!=nullptr){ wmat::row_to_f32(w.h+id*(size_t)width,dst,width); return; }

@@ -3,6 +3,7 @@
 #include<bits/stdc++.h>
 void rope_classic_at(float* q,int seq,int start_pos,int num_heads,int head_dim,const float* cos_table,const float* sin_table){
     int half=head_dim/2;
+    #pragma omp parallel for if(seq>=32)
     for (int pos=0;pos<seq;pos++) {
         const float* c=cos_table+(size_t)(start_pos+pos)*half;
         const float* s=sin_table+(size_t)(start_pos+pos)*half;

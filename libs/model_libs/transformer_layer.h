@@ -37,6 +37,7 @@ void transformer_layer(
     std::vector<float> proj((size_t)seq*hidden);
     std::vector<float> ffn_out((size_t)seq*hidden);
 
+    #pragma omp parallel for if(seq>=32)
     for(int i=0;i<seq;i++)
         rmsnorm(X+(size_t)i*hidden,xn.data()+(size_t)i*hidden,rms1_weight,hidden,eps);
 
@@ -44,9 +45,18 @@ void transformer_layer(
     matmul_w(Wk,seq,kv_dim,hidden,xn.data(),K.data());
     matmul_w(Wv,seq,kv_dim,hidden,xn.data(),V.data());
 
-    if(bq!=nullptr) for(int i=0;i<seq;i++) for(int j=0;j<q_dim;j++) Q[(size_t)i*q_dim+j]+=bq[j];
-    if(bk!=nullptr) for(int i=0;i<seq;i++) for(int j=0;j<kv_dim;j++) K[(size_t)i*kv_dim+j]+=bk[j];
-    if(bv!=nullptr) for(int i=0;i<seq;i++) for(int j=0;j<kv_dim;j++) V[(size_t)i*kv_dim+j]+=bv[j];
+    if(bq!=nullptr){
+        #pragma omp parallel for if(seq>=32)
+        for(int i=0;i<seq;i++) for(int j=0;j<q_dim;j++) Q[(size_t)i*q_dim+j]+=bq[j];
+    }
+    if(bk!=nullptr){
+        #pragma omp parallel for if(seq>=32)
+        for(int i=0;i<seq;i++) for(int j=0;j<kv_dim;j++) K[(size_t)i*kv_dim+j]+=bk[j];
+    }
+    if(bv!=nullptr){
+        #pragma omp parallel for if(seq>=32)
+        for(int i=0;i<seq;i++) for(int j=0;j<kv_dim;j++) V[(size_t)i*kv_dim+j]+=bv[j];
+    }
 
     rope_pos(Q.data(),seq,start_pos,num_heads,head_dim,cos_table,sin_table);
     rope_pos(K.data(),seq,start_pos,num_kv_heads,head_dim,cos_table,sin_table);
@@ -56,14 +66,17 @@ void transformer_layer(
 
     matmul_w(Wo,seq,hidden,q_dim,attn.data(),proj.data());
 
+    #pragma omp parallel for if(seq>=32)
     for(size_t i=0;i<(size_t)seq*hidden;i++)
         X[i]+=proj[i];
 
+    #pragma omp parallel for if(seq>=32)
     for(int i=0;i<seq;i++)
         rmsnorm(X+(size_t)i*hidden,xn.data()+(size_t)i*hidden,rms2_weight,hidden,eps);
 
     ffn(xn.data(),W1,W2,W3,ffn_out.data(),seq,hidden,intermediate);
 
+    #pragma omp parallel for if(seq>=32)
     for(size_t i=0;i<(size_t)seq*hidden;i++)
         X[i]+=ffn_out[i];
 }

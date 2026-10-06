@@ -5,8 +5,8 @@
 #include "../date_libs/date.h"
 #include "forward.h"
 #include "prefetch.h"
-// 每产出一个 token 就回调一次（流式输出用）；id 是新 token，ud 是你自己的上下文
-typedef void (*token_cb)(int id,void* ud);
+// 每产出一个 token 就回调一次（流式输出用）；回调返回 true 表示该停了（碰到结束记号）
+typedef bool (*token_cb)(int id,void* ud);
 int generate_cached(
     const int* prompt_ids,int prompt_len,
     const int* eos_ids,int num_eos,
@@ -48,8 +48,10 @@ int generate_cached(
                        num_heads,num_kv_heads,head_dim,intermediate);
         const float* last=X.data()+(size_t)(seq-1)*hidden;
         matmul_w(lm_head,1,vocab_size,hidden,last,logits.data());
+        // 重复惩罚只压"这一轮自己生成的"——带上提示词的话，用户刚说的词会被压低，
+        // 贪心就会把 hello 挤成 hetoo 这种
         if(repetition_penalty!=1.0f)
-            for(int i=0;i<len;i++){
+            for(int i=prompt_len;i<len;i++){
                 const int id=out_ids[i];
                 if(id>=0&&id<vocab_size)
                     logits[id]=(logits[id]>0.0f)?logits[id]/repetition_penalty
@@ -77,7 +79,7 @@ int generate_cached(
             }
         }
         out_ids[len++]=next;
-        if(cb!=nullptr) cb(next,cb_ud);
+        if(cb!=nullptr&&cb(next,cb_ud)) break;
         seq=1;
 
         bool stop=false;

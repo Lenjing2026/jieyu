@@ -1,7 +1,7 @@
 #include"libs/libs.h"
 #include"libs/text/text.h"
 using namespace std;
-
+using namespace json_libs;
 namespace cli {
 
 inline void usage(){
@@ -9,12 +9,17 @@ inline void usage(){
         <<"  jieyu                                          跑全部自测\n"
         <<"  jieyu run <名字> [最多生成] [温度] [最大长度] [重复惩罚]    装载 models/<名字> 并交互生成\n"
         <<"  jieyu run                                      列出 models/ 下能跑的模型\n"
+        <<"  jieyu list                                     同上\n"
+        <<"  jieyu info <名字>                              看 models/<名字>/model_info.json 里的作者/描述\n"
+        <<"  jieyu setup                                    建目录/文件：config.json、langrage/、models/、_file/\n"
+        <<"  jieyu langrage [名字|{json}]                    切语言（写进 config.json），不带参数就看当前和可用语言\n"
         <<"  jieyu --demo [目录]                            造演示小模型，文本进文本出\n"
         <<"  jieyu --convert <safetensors...|xxx.gguf> -o <目录> [--config f] [--tokenizer d] [--dtype quant|f32|f16]\n"
         <<"  jieyu --gguf <xxx.gguf>                        看 GGUF：元数据 / 词表 / 量化分布 / 张量清单\n"
         <<"  jieyu --show <model.bf>                        打印 model.bf 的张量目录\n"
         <<"  jieyu --gen <模型目录> <提示词> [最多生成] [温度] [最大长度] [重复惩罚]\n"
-        <<"  jieyu --chat <模型目录> [最多生成] [温度] [最大长度] [重复惩罚]\n";
+        <<"  jieyu --chat <模型目录> [最多生成] [温度] [最大长度] [重复惩罚]\n"
+        <<"    （[最多生成] 省了或给 0 就是不限，生成到 <|im_end|> / 上下文满为止）\n";
 }
 
 inline int read_json_int(const string& path,const string& key,int fallback){
@@ -77,7 +82,6 @@ inline int list_models(){
         }
     }
     if(n==0) cout<<"  （空的，先 jieyu --convert <xxx.gguf> -o models/<名字>）\n";
-    cout<<"用法：jieyu run <名字> [最多生成] [温度] [最大长度]\n";
     return n==0?1:0;
 }
 
@@ -263,7 +267,9 @@ inline int run_model(const string& dir,const string& prompt,int max_new,float te
         <<"词表   "<<m.tokenizer.vocab_size()<<" 个 token，最大长度 "<<m.refs.max_seq
         <<"，q/k/v bias "<<(m.refs.qkv_bias?"有":"无")
         <<"，add_bos "<<(m.refs.add_bos?"开":"关")
-        <<"，重复惩罚 "<<repetition_penalty<<"\n";
+        <<"，重复惩罚 "<<repetition_penalty
+        <<"，特殊 token "<<model.s_token.message_start<<"/"<<model.s_token.meesage_end
+        <<"/"<<model.s_token.text_end<<"\n";
     const int code=chat?pipeline::run_chat(m,max_new,temperature,repetition_penalty)
                      :pipeline::run_once(m,prompt,max_new,temperature,repetition_penalty);
     m.free();
@@ -271,8 +277,7 @@ inline int run_model(const string& dir,const string& prompt,int max_new,float te
 }
 
 inline int selftest(){
-    create_config_file();
-    setup_way();
+    setup_all();
     cout<<"稍等，我们正在获取你的cpu信息\n";
     cpu_can.GetCpuCan();
     OutCPUInfo(cpu_can);
@@ -302,22 +307,21 @@ inline int selftest(){
 }
 
 inline int main_impl(int argc,char** argv){
-    if(argc<2) return selftest();
+    if(argc<2) return 0;
     const string mode=argv[1];
     if(mode=="test") return selftest();
     if(mode=="run"){
         if(argc<3) return list_models();
         const string dir=find_model_dir(pipeline::acp_to_utf8(argv[2]));
         if(dir.empty()){ cout<<"找不到模型 "<<argv[2]<<"\n"; return list_models(); }
-        std::error_code ec;
-        const double gb=(double)file_size(path(dir)/"model.bf",ec)/(1<<30);
-        int max_new=(gb>2.0)?16:64,max_seq_want=0;
-        float temperature=0.0f,rep_penalty=1.1f;
-        if(argc>3) max_new=(std::max)(1,std::atoi(argv[3]));
+        int max_new=0,max_seq_want=0;
+        float temperature=0.7f,rep_penalty=1.1f;
+        if(argc>3) max_new=(std::max)(0,std::atoi(argv[3]));
         if(argc>4) temperature=(float)std::atof(argv[4]);
         if(argc>5) max_seq_want=(std::max)(8,std::atoi(argv[5]));
         if(argc>6) rep_penalty=(float)std::atof(argv[6]);
         return run_model(dir,"",max_new,temperature,rep_penalty,true,max_seq_want);
+        cout<<"用法：jieyu run <名字> [最多生成] [温度] [最大长度]\n";
     }
     if(mode=="--demo") return demo((argc>2)?argv[2]:"_file/demo");
     if(mode=="--show"){
@@ -342,21 +346,77 @@ inline int main_impl(int argc,char** argv){
         const string found=find_model_dir(dir);
         const bool chat=(mode=="--chat");
         string prompt;
-        int max_new=64,max_seq_want=0;
-        float temperature=0.0f,rep_penalty=1.1f;
+        int max_new=0,max_seq_want=0;
+        float temperature=chat?0.7f:0.0f,rep_penalty=1.1f;
         int next=3;
         if(!chat){
             if(argc>3) prompt=pipeline::acp_to_utf8(argv[3]);
             next=4;
         }
-        if(argc>next) max_new=(std::max)(1,std::atoi(argv[next]));
+        if(argc>next) max_new=(std::max)(0,std::atoi(argv[next]));
         if(argc>next+1) temperature=(float)std::atof(argv[next+1]);
         if(argc>next+2) max_seq_want=(std::max)(8,std::atoi(argv[next+2]));
         if(argc>next+3) rep_penalty=(float)std::atof(argv[next+3]);
         return run_model(found.empty()?dir:found,prompt,max_new,temperature,rep_penalty,chat,max_seq_want);
     }
-    if(mode=="info"){
-
+    if(mode=="setup"){
+        setup_all();
+        const char* items[]={"config.json","langrage/zh_cn.json","langrage/en_us.json"};
+        for(const char* p:items) cout<<(exists(path(p))?"  OK   ":"  FAIL ")<<p<<"\n";
+        cout<<(exists(path("models"))?"  OK   ":"  FAIL ")<<"models/\n";
+        cout<<(exists(path("_file"))?"  OK   ":"  FAIL ")<<"_file/\n";
+        return 0;
+    }
+    if(mode=="langrage"||mode=="language"){
+        if(argc<3){
+            cout<<"当前语言文件："<<current_langrage()<<"\n可用的：\n";
+            if(exists(path(langrage_dir())))
+                for(const auto& e:directory_iterator(path(langrage_dir())))
+                    if(e.path().extension()==".json") cout<<"  "<<e.path().filename().string()<<"\n";
+            cout<<"用法：jieyu langrage <名字|{json}>   例如 zh_cn.json 或 '{\"langrage\":\"en_us.json\"}'\n";
+            return 0;
+        }
+        string arg=pipeline::acp_to_utf8(argv[2]);
+        if(!arg.empty()&&arg[0]=='{'){
+            create_directories(path("_file"));
+            const string tmp="_file/.langrage_arg.json";
+            { ofstream f(tmp,ios::binary|ios::trunc); f<<arg; }
+            json_libs::json_lib src;
+            if(!src.SetJsonWay(tmp)){
+                cout<<"这段 json 解析不了："<<arg<<"\n"<<src.LastError()<<"\n"
+                    <<"（PowerShell 会把双引号吃掉，用 cmd 或写成文件再传）\n";
+                return 1;
+            }
+            src.ForEachKey([](const string& k,const string& v)->bool{
+                json_libs::json_lib c;
+                c.SetJsonWay(config_path());
+                c.WriteJsonKey(k,v);
+                return true;
+            });
+            std::filesystem::remove(path(tmp));
+            cout<<"已合进 config.json，当前语言文件："<<current_langrage()<<"\n";
+            return 0;
+        }
+        if(arg.size()<5||arg.compare(arg.size()-5,5,".json")!=0) arg+=".json";
+        if(!exists(path(langrage_dir())/arg)){
+            write_language_file(arg);
+            if(!exists(path(langrage_dir())/arg)){ cout<<"没有这个语言文件："<<arg<<"\n"; return 1; }
+        }
+        set_langrage(arg);
+        cout<<"语言已设为 "<<arg<<"（写进 config.json）\n";
+        return 0;
+    }
+    if(mode=="list"){
+        return list_models();
+    }
+    if(mode=="info" && argc==3){
+        const string name=pipeline::acp_to_utf8(argv[2]);
+        json_libs::json_lib temp;
+        temp.SetJsonWay("models/"+name+"/model_info.json");
+        if(!temp.IsLoaded()) temp.SetJsonWay("models/"+name+".json");
+        cout<<tr("model_writer","作者")<<"："<<temp.GetJsonData("writer")<<"\n";
+        cout<<tr("model_description","描述")<<"："<<temp.GetJsonData("say")<<"\n";
+        return 0;
     }
     usage();
     return 1;

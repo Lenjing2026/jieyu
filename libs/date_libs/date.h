@@ -21,6 +21,11 @@ struct ModelInfo{
     path model_tokenizer;
     HANDLE model_handle;
     LPVOID model_map;
+    struct __s_token{
+        uint64_t message_start;
+        uint64_t meesage_end;
+        uint64_t text_end;
+    }s_token;
 } model;
 struct RoPETable{
     int max_seq,

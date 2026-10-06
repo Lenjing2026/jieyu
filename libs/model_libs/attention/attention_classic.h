@@ -33,8 +33,9 @@ void attention_classic_kv(float* Q,float* K,float* V,float* out,int seq,int star
     }
     int group = num_heads / num_kv_heads;
     float scale=1.0f/sqrtf((float)head_dim);
-    std::vector<float> scores((size_t)start_pos+seq);
+    #pragma omp parallel for if((size_t)num_heads*(size_t)(start_pos+seq)>=1536)
     for (int h=0;h<num_heads;h++) {
+        std::vector<float> scores((size_t)start_pos+seq);
         int kv_h=h/group;
         for (int i=0;i<seq;i++) {
             const int p=start_pos+i;

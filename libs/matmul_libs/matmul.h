@@ -1,18 +1,19 @@
 #ifndef MATMUL_H
 #define MATMUL_H
-
+#include <omp.h>
 #include "matmul_avx.h"
 #include "matmul_fma.h"
 #include "matmul_avx_fma.h"
 #include "../date_libs/check_cpu.h"
 void matmul_classic(const int m,const int n,const int k,const float* A,const float* B,float* C) {
+    #pragma omp parallel for if(m>=4)
     for (int i=0;i<m;i++) {
-        for (int j=0;j<n;j++){
-            float sum=0.0f;
-            for (int t=0;t<k;t++) {
-                sum+=A[i*k+t]*B[t*n+j];
-            }
-            C[i*n+j]=sum;
+        float* crow=C+i*n;
+        for (int j=0;j<n;j++) crow[j]=0.0f;
+        for (int t=0;t<k;t++){
+            const float aval=A[i*k+t];
+            const float* brow=B+t*n;
+            for (int j=0;j<n;j++) crow[j]+=aval*brow[j];
         }
     }
 }

@@ -235,8 +235,6 @@ inline void write_tokenizer(const gguf::File& g,const string& out_dir,Result& r,
     if(tk==nullptr||tk->strs.empty()) throw runtime_error("gguf: 没有 tokenizer.ggml.tokens，抽不出词表");
     r.eos_id=(int)meta_int(g,"tokenizer.ggml.eos_token_id",-1);
     if(r.eos_id<0) r.eos_id=(int)meta_int(g,"tokenizer.ggml.bos_token_id",-1);
-    const string bos_piece="<" "\xEF\xBD\x9C" "begin" "\xE2\x96\x81" "of" "\xE2\x96\x81" "sentence" "\xEF\xBD\x9C" ">";
-    const string eos_piece="<" "\xEF\xBD\x9C" "end" "\xE2\x96\x81" "of" "\xE2\x96\x81" "sentence" "\xEF\xBD\x9C" ">";
     {
         ofstream v((fs::path(out_dir)/"vocab.json").string(),ios::binary|ios::trunc);
         if(!v) throw runtime_error("gguf: 写不了 vocab.json");
@@ -244,10 +242,6 @@ inline void write_tokenizer(const gguf::File& g,const string& out_dir,Result& r,
         for(size_t i=0;i<tk->strs.size();i++){
             if(i!=0) v<<",\n";
             v<<"  \""<<jesc(tk->strs[i])<<"\": "<<i;
-        }
-        if(r.eos_id>=0&&(size_t)r.eos_id<tk->strs.size()){
-            v<<",\n  \""<<eos_piece<<"\": "<<r.eos_id;
-            v<<",\n  \""<<bos_piece<<"\": "<<r.eos_id;
         }
         v<<"\n}\n";
     }
@@ -392,6 +386,21 @@ inline Result convert(const Options& opt){
         info.WriteJsonKey("rope_style",string("adjacent_after_permute"));
         info.WriteJsonKey("source_arch",r.arch);
         info.WriteJsonKey("source_file",fs::path(opt.src).filename().string());
+        // 把 GGUF 里的 general.name 记下来：run 时要靠它认 base/instruct
+        if(const gguf::Meta* nm=g.meta("general.name"))
+            if(!nm->s.empty()) info.WriteJsonKey("source_name",nm->s);
+        // 特殊 token：从自带的词表里挑（Qwen 的 <|im_start|> 这类），挑到哪个写哪个
+        if(const gguf::Meta* tk=g.meta("tokenizer.ggml.tokens")){
+            auto pick=[&](const char* key,std::initializer_list<const char*> cands)->bool{
+                for(const char* c:cands)
+                    for(const string& t:tk->strs)
+                        if(t==c){ info.WriteJsonKey(key,string(c)); return true; }
+                return false;
+            };
+            pick("message_start",{"<|im_start|>","<|start_header_id|>"});
+            pick("message_end",{"<|im_end|>","<|eot_id|>","<|end_of_turn|>"});
+            pick("text_end",{"<|endoftext|>","<|end_of_text|>","</s>"});
+        }
         r.eos_id=(int)meta_int(g,"tokenizer.ggml.eos_token_id",r.eos_id);
     }
     write_tokenizer(g,opt.out_dir,r,opt.verbose);

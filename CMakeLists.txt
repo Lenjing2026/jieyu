@@ -25,6 +25,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "构建类型" FORCE)
 endif()
 
+option(JIEYU_NO_O3 "不要强加 -O3" OFF)
+
 # ------------------------------------------------------------
 # 头文件库
 # ------------------------------------------------------------
@@ -79,9 +81,13 @@ target_link_libraries(jieyu PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(jieyu PRIVATE /utf-8 /W4)
+    target_compile_options(jieyu PRIVATE /utf-8 /W4 /openmp)
 else()
-    target_compile_options(jieyu PRIVATE -Wall -Wextra)
+    target_compile_options(jieyu PRIVATE -Wall -Wextra -fopenmp)
+    target_link_options(jieyu PRIVATE -fopenmp)
+    if(NOT JIEYU_NO_O3)
+        target_compile_options(jieyu PRIVATE -O3 -DNDEBUG)
+    endif()
 endif()
 
 # GCC 8 及更早版本使用 std::filesystem 需要显式链接 stdc++fs

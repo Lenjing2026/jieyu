@@ -10,7 +10,9 @@ void ffn(float* x,const WMat& w1,const WMat& w2,const WMat& w3,
     matmul_w(w1,seq,intermediate,hidden,x,gate.data());
     matmul_w(w3,seq,intermediate,hidden,x,up.data());
     silu(gate.data(),gate.data(),seq*intermediate);
-    for(int i=0;i<seq*intermediate;i++)
+    const int n_sw=(int)((size_t)seq*intermediate);
+    #pragma omp parallel for if(n_sw>=8192)
+    for(int i=0;i<n_sw;i++)
         gate[i]=gate[i]*up[i];
     matmul_w(w2,seq,hidden,intermediate,gate.data(),out);
 }

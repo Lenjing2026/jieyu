@@ -8,7 +8,6 @@
 #include "../date_libs/wmat.h"
 #include "../date_libs/check_cpu.h"
 
-// 块量化权重的类型代号（WMat.qt 用这里的值，和 bfile 的 dtype 是两套，靠 load_weights 映射）
 namespace qmat {
 
 enum : uint8_t { Q4K = 0, Q5K = 1, Q6K = 2, Q8_0 = 3 };
@@ -49,7 +48,6 @@ inline void get_scale_min_k4(int j, const unsigned char* q, unsigned char& sc, u
     }
 }
 
-// 一个块 -> f32；dst 需要 block_elems(t) 个位置
 inline void dequant_block(uint8_t t, const void* src, float* dst) {
     const unsigned char* b = static_cast<const unsigned char*>(src);
     switch (t) {
@@ -128,7 +126,6 @@ inline void dequant_block(uint8_t t, const void* src, float* dst) {
     }
 }
 
-// 单行的点积（生成时 m=1 走这里）：A[1,k] · dequant(B 的某一行)。四个累加器打掉 FMA 延迟
 __attribute__((target("avx2,fma")))
 inline float dot_row_avx2(const float* a,const unsigned char* row,uint8_t t,int k){
     const size_t be=block_elems(t),bb=block_bytes(t),nblk=(size_t)k/be;
@@ -152,30 +149,34 @@ inline float dot_row_avx2(const float* a,const unsigned char* row,uint8_t t,int 
     return _mm_cvtss_f32(r);
 }
 
-// C[m,n] = A[m,k] * Bᵀ ；B 按行存：n 行、每行 k 个元素，块沿 k
 inline void matmul_q(const float* a, const void* b, float* c, int m, int n, int k, uint8_t t) {
     const size_t be = block_elems(t), bb = block_bytes(t);
     const size_t rbytes = (size_t)k / be * bb;
     const size_t nblk = (size_t)k / be;
     const unsigned char* base = static_cast<const unsigned char*>(b);
     if (m == 1 && cpu_can.avx2 && cpu_can.fma3) {
+        #pragma omp parallel for
         for (int j = 0; j < n; j++) c[j] = dot_row_avx2(a, base + (size_t)j * rbytes, t, k);
         return;
     }
-    std::vector<float> acc((size_t)m);
-    float blk[256];
-    for (int j = 0; j < n; j++) {
-        const unsigned char* row = base + (size_t)j * rbytes;
-        for (int i = 0; i < m; i++) acc[(size_t)i] = 0.0f;
-        for (size_t bl = 0; bl < nblk; bl++) {
-            dequant_block(t, row + bl * bb, blk);
-            const size_t off = bl * be;
-            for (size_t l = 0; l < be; l++) {
-                const float bv = blk[l];
-                for (int i = 0; i < m; i++) acc[(size_t)i] += a[(size_t)i * k + off + l] * bv;
+    #pragma omp parallel
+    {
+        std::vector<float> acc((size_t)m);
+        float blk[256];
+        #pragma omp for
+        for (int j = 0; j < n; j++) {
+            const unsigned char* row = base + (size_t)j * rbytes;
+            for (int i = 0; i < m; i++) acc[(size_t)i] = 0.0f;
+            for (size_t bl = 0; bl < nblk; bl++) {
+                dequant_block(t, row + bl * bb, blk);
+                const size_t off = bl * be;
+                for (size_t l = 0; l < be; l++) {
+                    const float bv = blk[l];
+                    for (int i = 0; i < m; i++) acc[(size_t)i] += a[(size_t)i * k + off + l] * bv;
+                }
             }
+            for (int i = 0; i < m; i++) c[(size_t)i * n + j] = acc[(size_t)i];
         }
-        for (int i = 0; i < m; i++) c[(size_t)i * n + j] = acc[(size_t)i];
     }
 }
 

@@ -363,6 +363,10 @@ public:
     // 查询某个 piece 是否在词表中
     bool contains_token(const std::string& piece) const;
 
+    // 把模型自带的特殊 token（<|im_start|> 这种）登记进识别表，以后 encode 会直接认出它
+    // 返回它的 id；词表里没有这个 piece 就返回 -1
+    int32_t add_special_token(const std::string& piece);
+
 private:
     // 在一个词内做 BPE 合并：双向链表 + 优先队列，复杂度 O(n log n)
     std::vector<int32_t> merge_word(const std::vector<int32_t>& symbols) const;
@@ -413,6 +417,24 @@ inline int32_t Tokenizer::piece_id(const std::string& piece) const {
 
 inline bool Tokenizer::contains_token(const std::string& piece) const {
     return piece_to_id_.find(piece) != piece_to_id_.end();
+}
+
+inline int32_t Tokenizer::add_special_token(const std::string& piece) {
+    if (piece.empty()) {
+        return -1;
+    }
+    const int32_t id = piece_id(piece);
+    if (id < 0) {
+        return -1;  // 词表里没这个 piece，认不出来
+    }
+    for (const std::string& have : special_pieces_) {
+        if (have == piece) {
+            return id;  // 已经登记过
+        }
+    }
+    special_pieces_.push_back(piece);
+    special_ids_.push_back(id);
+    return id;
 }
 
 // 使用 tokenizer_way() 规定的路径加载

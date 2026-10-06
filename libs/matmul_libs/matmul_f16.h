@@ -4,8 +4,8 @@
 #include <immintrin.h>
 #include "../date_libs/wmat.h"
 
-// B 是 f16（半字节宽），A/C 还是 f32：省一半权重内存
 void matmul_f16_classic(const float* a,const uint16_t* b,float* c,int m,int n,int k){
+    #pragma omp parallel for if(m>=4)
     for(int i=0;i<m;i++)
         for(int j=0;j<n;j++){
             float sum=0.0f;
@@ -16,6 +16,7 @@ void matmul_f16_classic(const float* a,const uint16_t* b,float* c,int m,int n,in
 
 __attribute__((target("avx2,fma,f16c")))
 void matmul_f16_avx_fma(const float* a,const uint16_t* b,float* c,int m,int n,int k){
+    #pragma omp parallel for if(m>=4)
     for(int i=0;i<m;i++){
         float* crow=c+i*n;
         const float* arow=a+i*k;

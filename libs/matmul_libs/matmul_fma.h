@@ -1,9 +1,10 @@
 #ifndef MATMUL_FMA_H
 #define MATMUL_FMA_H
-
+#include<omp.h>
 #include <immintrin.h>
 __attribute__((target("fma")))
 void matmul_fma(const float *a, const float *b, float *c, int m, int n, int k){
+    #pragma omp parallel for if(m>=4)
     for(int i=0;i<m;i++){
         float* crow=c+i*n;
         const float* arow=a+i*k;
