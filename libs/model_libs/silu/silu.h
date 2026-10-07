@@ -1,9 +1,15 @@
 #ifndef silu_h
 #define silu_h
-#include<cmath>
-void silu(float* x,float*y,int n){
-    #pragma omp parallel for if(n>=8192)
-    for(int i=0;i<n;i++)
-        y[i]=x[i]/(1.0f+expf(-x[i]));
+#include "silu_classic.h"
+#include "silu_avx.h"
+#include "silu_fma.h"
+#include "../../date_libs/check_cpu.h"
+void silu(float* x,float* y,int n){
+    if(cpu_can.fma3)
+        silu_fma(x,y,n);
+    else if(cpu_can.avx)
+        silu_avx(x,y,n);
+    else
+        silu_classic(x,y,n);
 }
 #endif

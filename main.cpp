@@ -1,25 +1,28 @@
 #include"libs/libs.h"
 #include"libs/text/text.h"
+#include<shellapi.h>
 using namespace std;
 using namespace json_libs;
 namespace cli {
 
 inline void usage(){
     cout<<"用法：\n"
-        <<"  jieyu                                          跑全部自测\n"
-        <<"  jieyu run <名字> [最多生成] [温度] [最大长度] [重复惩罚]    装载 models/<名字> 并交互生成\n"
-        <<"  jieyu run                                      列出 models/ 下能跑的模型\n"
-        <<"  jieyu list                                     同上\n"
-        <<"  jieyu info <名字>                              看 models/<名字>/model_info.json 里的作者/描述\n"
-        <<"  jieyu setup                                    建目录/文件：config.json、langrage/、models/、_file/\n"
-        <<"  jieyu langrage [名字|{json}]                    切语言（写进 config.json），不带参数就看当前和可用语言\n"
-        <<"  jieyu --demo [目录]                            造演示小模型，文本进文本出\n"
-        <<"  jieyu --convert <safetensors...|xxx.gguf> -o <目录> [--config f] [--tokenizer d] [--dtype quant|f32|f16]\n"
-        <<"  jieyu --gguf <xxx.gguf>                        看 GGUF：元数据 / 词表 / 量化分布 / 张量清单\n"
-        <<"  jieyu --show <model.bf>                        打印 model.bf 的张量目录\n"
-        <<"  jieyu --gen <模型目录> <提示词> [最多生成] [温度] [最大长度] [重复惩罚]\n"
-        <<"  jieyu --chat <模型目录> [最多生成] [温度] [最大长度] [重复惩罚]\n"
-        <<"    （[最多生成] 省了或给 0 就是不限，生成到 <|im_end|> / 上下文满为止）\n";
+        <<"  jieyu                                          跑全部自测（= jieyu -test / jieyu -text）\n"
+        <<"  jieyu -run <名字> [最多生成] [温度] [最大长度] [重复惩罚] [-tokenspeed]    装载 models/<名字> 并交互生成\n"
+        <<"  jieyu -run                                     列出 models/ 下能跑的模型\n"
+        <<"  jieyu -list                                    同上\n"
+        <<"  jieyu -info <名字>                             看 models/<名字>/model_info.json 里的作者/描述\n"
+        <<"  jieyu -setup                                   建目录/文件：config.json、langrage/、models/、_file/\n"
+        <<"  jieyu -langrage [名字|{json}]                  切语言（写进 config.json），不带参数就看当前和可用语言\n"
+        <<"  jieyu -demo [目录]                             造演示小模型，文本进文本出\n"
+        <<"  jieyu -convert <safetensors...|xxx.gguf> -o <目录> [-config f] [-tokenizer d] [-dtype quant|f32|f16]\n"
+        <<"  jieyu -gguf <xxx.gguf>                         看 GGUF：元数据 / 词表 / 量化分布 / 张量清单\n"
+        <<"  jieyu -show <model.bf>                         打印 model.bf 的张量目录\n"
+        <<"  jieyu -gen <模型目录> <提示词> [最多生成] [温度] [最大长度] [重复惩罚] [-tokenspeed]\n"
+        <<"  jieyu -chat <模型目录> [最多生成] [温度] [最大长度] [重复惩罚] [-tokenspeed]\n"
+        <<"  jieyu -?                                       看这份用法\n"
+        <<"    （[最多生成] 省了或给 0 就是不限，生成到 <|im_end|> / 上下文满为止）\n"
+        <<"    （-tokenspeed 跟在 -run / -gen / -chat 后面：每次生成完分开打印预填充与解码两段速度，位置随便放）\n";
 }
 
 inline int read_json_int(const string& path,const string& key,int fallback){
@@ -81,7 +84,7 @@ inline int list_models(){
             n++;
         }
     }
-    if(n==0) cout<<"  （空的，先 jieyu --convert <xxx.gguf> -o models/<名字>）\n";
+    if(n==0) cout<<"  （空的，先 jieyu -convert <xxx.gguf> -o models/<名字>）\n";
     return n==0?1:0;
 }
 
@@ -117,10 +120,12 @@ inline int convert(vector<string> args){
     bool quant=true;
     for(size_t i=0;i<args.size();i++){
         const string& a=args[i];
-        if(a=="-o"||a=="--out"){ if(i+1<args.size()) opt.out_dir=args[++i]; }
-        else if(a=="--config"){ if(i+1<args.size()) opt.config_path=args[++i]; }
-        else if(a=="--tokenizer"){ if(i+1<args.size()) opt.tokenizer_dir=args[++i]; }
-        else if(a=="--dtype"){
+        string key;
+        if(!a.empty()&&a[0]=='-'){ key=a; while(!key.empty()&&key[0]=='-') key.erase(0,1); }
+        if(key=="o"||key=="out"){ if(i+1<args.size()) opt.out_dir=args[++i]; }
+        else if(key=="config"){ if(i+1<args.size()) opt.config_path=args[++i]; }
+        else if(key=="tokenizer"){ if(i+1<args.size()) opt.tokenizer_dir=args[++i]; }
+        else if(key=="dtype"){
             if(i+1<args.size()){
                 const string v=args[++i];
                 const int d=converter::dtype_from_name(v);
@@ -128,7 +133,7 @@ inline int convert(vector<string> args){
                 else quant=true;
             }
         }
-        else if(a=="--no-tokenizer") opt.copy_tokenizer=false;
+        else if(key=="no-tokenizer") opt.copy_tokenizer=false;
         else if(!a.empty()&&a[0]=='-'){ cout<<"不认识的参数: "<<a<<"\n"; return 1; }
         else if(is_directory(a)){
             for(const auto& e:directory_iterator(a))
@@ -249,7 +254,18 @@ inline int gguf_info(const string& file){
     return 0;
 }
 
-inline int run_model(const string& dir,const string& prompt,int max_new,float temperature,float repetition_penalty,bool chat,int max_seq_want){
+inline bool collect_pos(int argc,char** argv,int from,vector<string>& pos){
+    bool show_speed=false;
+    for(int i=from;i<argc;i++){
+        string a=argv[i];
+        while(!a.empty()&&(a[0]=='-'||a[0]=='/')) a.erase(0,1);
+        if(a=="tokenspeed"||a=="speed"){ show_speed=true; continue; }
+        pos.push_back(pipeline::acp_to_utf8(argv[i]));
+    }
+    return show_speed;
+}
+
+inline int run_model(const string& dir,const string& prompt,int max_new,float temperature,float repetition_penalty,bool chat,int max_seq_want,bool show_speed=false){
     pipeline::LoadedModel m;
     string err;
     const int want=read_json_int(dir+"/model_info.json","max_position_embeddings",1024);
@@ -270,8 +286,8 @@ inline int run_model(const string& dir,const string& prompt,int max_new,float te
         <<"，重复惩罚 "<<repetition_penalty
         <<"，特殊 token "<<model.s_token.message_start<<"/"<<model.s_token.meesage_end
         <<"/"<<model.s_token.text_end<<"\n";
-    const int code=chat?pipeline::run_chat(m,max_new,temperature,repetition_penalty)
-                     :pipeline::run_once(m,prompt,max_new,temperature,repetition_penalty);
+    const int code=chat?pipeline::run_chat(m,max_new,temperature,repetition_penalty,show_speed)
+                     :pipeline::run_once(m,prompt,max_new,temperature,repetition_penalty,show_speed);
     m.free();
     return code;
 }
@@ -307,57 +323,61 @@ inline int selftest(){
 }
 
 inline int main_impl(int argc,char** argv){
-    if(argc<2) return 0;
-    const string mode=argv[1];
-    if(mode=="test") return selftest();
+    cpu_can.GetCpuCan();
+    if(argc<2) return selftest();
+    string mode=argv[1];
+    while(!mode.empty()&&(mode[0]=='-'||mode[0]=='/')) mode.erase(0,1);
+    if(mode=="?"){ usage(); return 0; }
+    if(mode=="h"||mode=="help"||mode=="test"||mode=="text") return selftest();
     if(mode=="run"){
         if(argc<3) return list_models();
         const string dir=find_model_dir(pipeline::acp_to_utf8(argv[2]));
         if(dir.empty()){ cout<<"找不到模型 "<<argv[2]<<"\n"; return list_models(); }
+        vector<string> pos;
+        const bool show_speed=collect_pos(argc,argv,3,pos);
         int max_new=0,max_seq_want=0;
         float temperature=0.7f,rep_penalty=1.1f;
-        if(argc>3) max_new=(std::max)(0,std::atoi(argv[3]));
-        if(argc>4) temperature=(float)std::atof(argv[4]);
-        if(argc>5) max_seq_want=(std::max)(8,std::atoi(argv[5]));
-        if(argc>6) rep_penalty=(float)std::atof(argv[6]);
-        return run_model(dir,"",max_new,temperature,rep_penalty,true,max_seq_want);
-        cout<<"用法：jieyu run <名字> [最多生成] [温度] [最大长度]\n";
+        if(pos.size()>0) max_new=(std::max)(0,std::atoi(pos[0].c_str()));
+        if(pos.size()>1) temperature=(float)std::atof(pos[1].c_str());
+        if(pos.size()>2) max_seq_want=(std::max)(8,std::atoi(pos[2].c_str()));
+        if(pos.size()>3) rep_penalty=(float)std::atof(pos[3].c_str());
+        return run_model(dir,"",max_new,temperature,rep_penalty,true,max_seq_want,show_speed);
+        cout<<"用法：jieyu -run <名字> [最多生成] [温度] [最大长度]\n";
     }
-    if(mode=="--demo") return demo((argc>2)?argv[2]:"_file/demo");
-    if(mode=="--show"){
+    if(mode=="demo") return demo((argc>2)?argv[2]:"_file/demo");
+    if(mode=="show"){
         if(argc<3){ usage(); return 1; }
         try{ converter::show(argv[2]); }
         catch(const std::exception& e){ cout<<e.what()<<"\n"; return 1; }
         return 0;
     }
-    if(mode=="--gguf"){
+    if(mode=="gguf"){
         if(argc<3){ usage(); return 1; }
         try{ return gguf_info(pipeline::acp_to_utf8(argv[2])); }
         catch(const std::exception& e){ cout<<e.what()<<"\n"; return 1; }
     }
-    if(mode=="--convert"){
+    if(mode=="convert"){
         vector<string> rest;
         for(int i=2;i<argc;i++) rest.push_back(pipeline::acp_to_utf8(argv[i]));
         return convert(rest);
     }
-    if(mode=="--gen"||mode=="--chat"){
+    if(mode=="gen"||mode=="chat"){
         if(argc<3){ usage(); return 1; }
         const string dir=pipeline::acp_to_utf8(argv[2]);
         const string found=find_model_dir(dir);
-        const bool chat=(mode=="--chat");
+        const bool chat=(mode=="chat");
+        vector<string> pos;
+        const bool show_speed=collect_pos(argc,argv,3,pos);
         string prompt;
         int max_new=0,max_seq_want=0;
         float temperature=chat?0.7f:0.0f,rep_penalty=1.1f;
-        int next=3;
-        if(!chat){
-            if(argc>3) prompt=pipeline::acp_to_utf8(argv[3]);
-            next=4;
-        }
-        if(argc>next) max_new=(std::max)(0,std::atoi(argv[next]));
-        if(argc>next+1) temperature=(float)std::atof(argv[next+1]);
-        if(argc>next+2) max_seq_want=(std::max)(8,std::atoi(argv[next+2]));
-        if(argc>next+3) rep_penalty=(float)std::atof(argv[next+3]);
-        return run_model(found.empty()?dir:found,prompt,max_new,temperature,rep_penalty,chat,max_seq_want);
+        size_t next=0;
+        if(!chat){ if(pos.size()>next) prompt=pos[next]; next=1; }
+        if(pos.size()>next) max_new=(std::max)(0,std::atoi(pos[next].c_str()));
+        if(pos.size()>next+1) temperature=(float)std::atof(pos[next+1].c_str());
+        if(pos.size()>next+2) max_seq_want=(std::max)(8,std::atoi(pos[next+2].c_str()));
+        if(pos.size()>next+3) rep_penalty=(float)std::atof(pos[next+3].c_str());
+        return run_model(found.empty()?dir:found,prompt,max_new,temperature,rep_penalty,chat,max_seq_want,show_speed);
     }
     if(mode=="setup"){
         setup_all();
@@ -373,7 +393,7 @@ inline int main_impl(int argc,char** argv){
             if(exists(path(langrage_dir())))
                 for(const auto& e:directory_iterator(path(langrage_dir())))
                     if(e.path().extension()==".json") cout<<"  "<<e.path().filename().string()<<"\n";
-            cout<<"用法：jieyu langrage <名字|{json}>   例如 zh_cn.json 或 '{\"langrage\":\"en_us.json\"}'\n";
+            cout<<"用法：jieyu -langrage <名字|{json}>   例如 zh_cn.json 或 '{\"langrage\":\"en_us.json\"}'\n";
             return 0;
         }
         string arg=pipeline::acp_to_utf8(argv[2]);
@@ -424,9 +444,32 @@ inline int main_impl(int argc,char** argv){
 
 }  // namespace cli
 
+#ifdef _WIN32
+string wide_to_utf8(const wchar_t* w){
+    if(w==nullptr) return string();
+    const int n=WideCharToMultiByte(CP_UTF8,0,w,-1,nullptr,0,nullptr,nullptr);
+    if(n<=1) return string();
+    string s((size_t)(n-1),'\0');
+    WideCharToMultiByte(CP_UTF8,0,w,-1,s.data(),n,nullptr,nullptr);
+    return s;
+}
+#endif
+
 int main(int argc,char** argv){
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
+    int wc=0;
+    LPWSTR* wa=CommandLineToArgvW(GetCommandLineW(),&wc);
+    vector<string> args;
+    vector<char*> av;
+    if(wa!=nullptr){
+        args.reserve((size_t)wc);
+        for(int i=0;i<wc;i++) args.push_back(wide_to_utf8(wa[i]));
+        LocalFree(wa);
+        for(string& s:args) av.push_back(s.data());
+        argc=(int)av.size();
+        argv=av.data();
+    }
 #endif
     return cli::main_impl(argc,argv);
 }

@@ -61,8 +61,8 @@ void transformer_layer(
     rope_pos(Q.data(),seq,start_pos,num_heads,head_dim,cos_table,sin_table);
     rope_pos(K.data(),seq,start_pos,num_kv_heads,head_dim,cos_table,sin_table);
 
-    attention_kv(Q.data(),K.data(),V.data(),attn.data(),seq,start_pos,
-                 num_heads,num_kv_heads,head_dim,cache_k,cache_v,kv_cap);
+    attention(Q.data(),K.data(),V.data(),attn.data(),seq,start_pos,
+              num_heads,num_kv_heads,head_dim,cache_k,cache_v,kv_cap);
 
     matmul_w(Wo,seq,hidden,q_dim,attn.data(),proj.data());
 

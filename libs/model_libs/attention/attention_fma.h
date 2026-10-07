@@ -1,11 +1,14 @@
-#ifndef ATTENTION_CLASSIC_H
-#define ATTENTION_CLASSIC_H
+#ifndef ATTENTION_FMA_H
+#define ATTENTION_FMA_H
 #include <cmath>
 #include <cstring>
 #include <vector>
 #include <stdexcept>
+#include <immintrin.h>
+#include <omp.h>
 using namespace std;
-void attention_classic(float* Q,float* K,float* V,float* out,int seq,int start_pos,
+__attribute__((target("avx,fma")))
+void attention_fma(float* Q,float* K,float* V,float* out,int seq,int start_pos,
                        int num_heads,int num_kv_heads,int head_dim,
                        float* ck=nullptr,float* cv=nullptr,int kv_cap=0){
     if(num_kv_heads<=0||num_heads%num_kv_heads!=0)
@@ -37,9 +40,26 @@ void attention_classic(float* Q,float* K,float* V,float* out,int seq,int start_p
             float mxs=-1e30f;
             for (int j=0;j<=p;j++) {
                 const float* k=ck+((size_t)j*num_kv_heads+kv_h)*head_dim;
-                float dt=0.0f;
-                for (int d=0;d<head_dim;d++)
-                    dt+=q[d]*k[d];
+                int d=0;
+                __m256 a0=_mm256_setzero_ps();
+                __m256 a1=_mm256_setzero_ps();
+                __m256 a2=_mm256_setzero_ps();
+                __m256 a3=_mm256_setzero_ps();
+                for (;d+32<=head_dim;d+=32) {
+                    a0=_mm256_fmadd_ps(_mm256_loadu_ps(q+d),_mm256_loadu_ps(k+d),a0);
+                    a1=_mm256_fmadd_ps(_mm256_loadu_ps(q+d+8),_mm256_loadu_ps(k+d+8),a1);
+                    a2=_mm256_fmadd_ps(_mm256_loadu_ps(q+d+16),_mm256_loadu_ps(k+d+16),a2);
+                    a3=_mm256_fmadd_ps(_mm256_loadu_ps(q+d+24),_mm256_loadu_ps(k+d+24),a3);
+                }
+                for (;d+8<=head_dim;d+=8)
+                    a0=_mm256_fmadd_ps(_mm256_loadu_ps(q+d),_mm256_loadu_ps(k+d),a0);
+                a0=_mm256_add_ps(_mm256_add_ps(a0,a1),_mm256_add_ps(a2,a3));
+                __m128 lo=_mm256_castps256_ps128(a0);
+                __m128 hi=_mm256_extractf128_ps(a0,1);
+                __m128 s4=_mm_hadd_ps(_mm_add_ps(lo,hi),_mm_add_ps(lo,hi));
+                s4=_mm_hadd_ps(s4,s4);
+                float dt=_mm_cvtss_f32(s4);
+                for (;d<head_dim;d++) dt+=q[d]*k[d];
                 dt*=scale;
                 scores[j]=dt;
                 if (dt>mxs) mxs=dt;
@@ -55,9 +75,15 @@ void attention_classic(float* Q,float* K,float* V,float* out,int seq,int start_p
             memset(o,0,head_dim*sizeof(float));
             for (int j=0;j<=p;j++) {
                 const float* v=cv+((size_t)j*num_kv_heads+kv_h)*head_dim;
-                float prob=scores[j];
-                for (int d=0;d<head_dim;d++)
-                    o[d]+=prob*v[d];
+                const float prob=scores[j];
+                const __m256 vprob=_mm256_set1_ps(prob);
+                int d=0;
+                for (;d+8<=head_dim;d+=8) {
+                    __m256 ov=_mm256_loadu_ps(o+d);
+                    ov=_mm256_fmadd_ps(vprob,_mm256_loadu_ps(v+d),ov);
+                    _mm256_storeu_ps(o+d,ov);
+                }
+                for (;d<head_dim;d++) o[d]+=prob*v[d];
             }
         }
     }

@@ -400,6 +400,22 @@ inline Result convert(const Options& opt){
             pick("message_start",{"<|im_start|>","<|start_header_id|>"});
             pick("message_end",{"<|im_end|>","<|eot_id|>","<|end_of_turn|>"});
             pick("text_end",{"<|endoftext|>","<|end_of_text|>","</s>"});
+            // DeepSeek（R1 蒸馏）自己那套：｜ 是 U+FF5C、▁ 是 U+2581
+            const string ds_user ="<\xEF\xBD\x9C" "User" "\xEF\xBD\x9C>";
+            const string ds_asst ="<\xEF\xBD\x9C" "Assistant" "\xEF\xBD\x9C>";
+            const string ds_begin="<\xEF\xBD\x9C" "begin" "\xE2\x96\x81" "of" "\xE2\x96\x81" "sentence" "\xEF\xBD\x9C>";
+            const string ds_end  = "<\xEF\xBD\x9C" "end" "\xE2\x96\x81" "of" "\xE2\x96\x81" "sentence" "\xEF\xBD\x9C>";
+            auto has_token=[&](const string& s)->bool{
+                for(const string& t:tk->strs) if(t==s) return true;
+                return false;
+            };
+            if(has_token(ds_user)&&has_token(ds_asst)){
+                info.WriteJsonKey("template",string("deepseek"));
+                info.WriteJsonKey("bos_text",ds_begin);
+                info.WriteJsonKey("user_start",ds_user);
+                info.WriteJsonKey("assistant_start",ds_asst);
+                info.WriteJsonKey("turn_end",ds_end);
+            }
         }
         r.eos_id=(int)meta_int(g,"tokenizer.ggml.eos_token_id",r.eos_id);
     }

@@ -32,16 +32,16 @@ JieYuAI/
 │   │   ├── ffn/                SwiGLU 前向
 │   │   ├── rmsnorm/            RMSNorm
 │   │   ├── rope/               RoPE 旋转位置编码
-│   │   ├── attention/          因果 GQA 注意力
-│   │   ├── transformer_layer.h 单个 block 前向（9 步）
+│   │   ├── attention/          因果 GQA 注意力（整段 / 带 KV cache 两个入口）
+│   │   ├── transformer_layer.h 单个 block 前向（带 cache 与不带 cache 两个重载）
 │   │   ├── bfile.h            model.bf v2 格式：头部 / 张量目录 / 读写（含流式写）
 │   │   ├── creater_model.h     生成空的 model.bf（只有头部）
 │   │   ├── install_model.h     装载 model.bf（mmap + 校验 + 挂上张量表）
 │   │   ├── safetensors.h       读 HuggingFace safetensors（复用 json_libs 解析 header）
 │   │   ├── converter.h         safetensors -> model.bf（含造演示模型）
 │   │   ├── load_weights.h      按名字取权重指针，填进 layers[]
-│   │   ├── forward.h           多层串联 + 最终 RMSNorm
-│   │   ├── generate.h          自回归生成（采样 + EOS 停止）
+│   │   ├── forward.h           多层串联 + 最终 RMSNorm（forward / forward_cached）
+│   │   ├── generate.h          自回归生成（KV cache + 采样 + EOS 停止）
 │   │   ├── pipeline.h          端到端：文本 -> token -> 生成 -> 文本
 │   │   ├── final_norm.h        逐行 RMSNorm（单独抽出）
 │   │   ├── lm_head.h           最后一行 * unembedding
@@ -88,10 +88,11 @@ g++ -std=c++17 -O2 -Wall -Wextra -I. -Ilibs -Ilibs/json_libs -Ilibs/tokenizer_li
 | `check_attention` | 7 | MHA / GQA / MQA + 因果性 + 数值稳定 |
 | `check_transformer_layer` | 7 | 整层端到端（double 参考 + 残差恒等） |
 | `check_generate` | 5 | 自回归生成（逐 token 对比 double 参考 + EOS 停止） |
+| `check_kv_cache` | 9 | 分段算 == 整段算（逐元素）；cache 内容、current_len、越界与层数不符拦截 |
 | `check_convert` | 12 | safetensors → model.bf：转置、f16/bf16 转换、分片合并、权重共享 |
 | `check_bind_weights` | 9 | 按名字填 `layers[]`、生成对齐 double 参考、形状写反能被拦住 |
 | `check_pipeline` | 10 | 文本进文本出：分词往返（中/英）+ 端到端生成结果断言 |
-| **合计** | **119** | 全部通过时退出码为 0 |
+| **合计** | **128** | 全部通过时退出码为 0 |
 
 ## 命令行用法
 
@@ -175,6 +176,37 @@ g++ -std=c++17 -O2 -Wall -Wextra -I. -Ilibs -Ilibs/json_libs -Ilibs/tokenizer_li
 
 `bind_model()` 会按这张表逐项校验形状，转置漏了会直接报错并打印实际/期望形状，不会静默算错。
 
+## KV cache
+
+`date_libs/date.h` 里的 `__KVcache` 是唯一的缓存结构，布局是连续一段：
+
+```text
+k/v: [num_layers][max_seq][num_kv_heads][head_dim]
+```
+
+三个入口，逐层往上：
+
+| 函数 | 位置 | 作用 |
+| --- | --- | --- |
+| `attention(Q,K,V,out,seq,start_pos,...,ck,cv,kv_cap)` | `attention/attention.h` | 把本段新 K/V 写进 `[start_pos, start_pos+seq)`，查询 `i` 注意 `0..start_pos+i` |
+| `transformer_layer(...,start_pos,cache_k,cache_v,kv_cap)` | `transformer_layer.h` | 单层前向；两个 cache 指针传 `nullptr` 就退化成整段一次算 |
+| `forward_cached(X,layers,nl,...,seq,start_pos,cache,...)` | `forward.h` | 多层串联 + 最终 RMSNorm |
+| `generate_cached(...,cache,out_ids)` | `generate.h` | 第一步整段 prefill，之后每步 1 个 token |
+
+调用方自备一份 cache 就能跨多次调用复用：
+
+```cpp
+__KVcache cache;
+cache.init(num_layers, max_seq, num_kv_heads, head_dim);
+generate_cached(prompt, plen, eos, neos, embed, lm_head, layers, nl, final_norm,
+                cos_t, sin_t, max_seq, max_new, temp, vocab, hidden,
+                num_heads, num_kv_heads, head_dim, inter, cache, out_ids);
+```
+
+生成结束时 `cache.current_len` 是「已经喂进去的 token 数」。注意最后一个生成出来的 token 还没喂回缓存，所以想接着往下生成时，直接把 `current_len` 当 `start_pos`、喂 `out_ids[current_len]` 就行。
+
+`generate()` 保留了原签名，内部自己开一份 cache，一次性调用不用改代码。
+
 ## 核心实现
 
 - **字节级 BPE**：UTF-8 按字节拆分并映射为可打印字符，任何字节序列都能无损往返，不存在 OOV；编码用双向链表 + 优先队列 + 版本号惰性失效做到 O(n log n)
@@ -183,18 +215,19 @@ g++ -std=c++17 -O2 -Wall -Wextra -I. -Ilibs -Ilibs/json_libs -Ilibs/tokenizer_li
 - **完整 Transformer 算子**：RMSNorm、RoPE、因果 GQA 注意力（减最大值 softmax）、SwiGLU FFN、整层与多层串联
 - **模型装载**：`model.bf` 走 Windows 内存映射，头部校验后按偏移读出各超参；v2 张量目录让权重可以直接按名字查，零拷贝
 - **safetensors 转换器**：纯 C++（不用 Python），自己解析 safetensors 的 JSON 头；转置、dtype 转换（f16/bf16 → f32）都在转换时做掉，不转置的张量分块流式读写，内存只占一块缓冲区
-- **自回归生成**：embed 查表 → 整层前向 → `lm_head` → argmax / 温度采样 → 追加 token，支持 EOS 提前停止
+- **自回归生成**：embed 查表 -> 前向 -> `lm_head` -> argmax / 温度采样 -> 追加 token，支持 EOS 提前停止
+- **KV cache**：prompt 整段 prefill 一次，之后每步只喂 1 个新 token，生成第 n 个 token 的注意力代价从 $O(n^2)$ 降到 $O(n)$。`__KVcache` 按 `[layer][seq][kv_head][head_dim]` 连续存放，K/V 跟着 RoPE 位置一起续算；「分段算」与「整段算」逐元素完全相同
 - **端到端管道**：`encode -> generate -> decode`，逐 token 解码并处理跨 token 的 UTF-8 多字节字符，不会被截断成乱码
 - **header-only**：没有 `src/*.cpp`，全部实现写在头文件里
 
 ## 已知限制
 
 - **RoPE 用的是相邻对风格**（`(2i, 2i+1)`，GPT-J / 原始 RoPE）；Llama / Qwen 权重用的是 NeoX 半分裂风格。两者不匹配时不会报错，只会静默算错，接入真实权重前必须确认
-- **没有 KV cache**：注意力每步都重算整段序列，生成第 n 个 token 的代价是 $O(n^2)$，只能跑短上下文
+- **没有 KV cache 之外的缓存策略**：不支持滑动窗口 / 分页注意力，`max_seq` 开多大就占多少内存（$2 \times L \times S \times H_{kv} \times D \times 4$ 字节，0.5B 模型 4K 上下文约 100 MB）
 - **引擎只读 f32**：转换器支持写出 f16/bf16（格式里也有 dtype 字段），但 matmul 还没写对应分支
 - **转置要占内存**：单个二维权重转置时需要 `4 × 元素数` 的临时内存，转一个 0.5B 模型的 `lm_head` 大约 500 MB
 - **RoPE / RMSNorm / Attention 目前只有经典实现**，没有 AVX 版本（matmul / ffn 已有）
-- 每层前向都会分配临时缓冲区，多层推理时开销明显
+- 每层前向都会分配临时缓冲区（带 cache 后每步只有 1 行，开销很小）
 
 详细的分词器文档见 [`libs/tokenizer_libs/README.md`](libs/tokenizer_libs/README.md)，
 JSON 模块见 [`libs/json_libs/json文档.md`](libs/json_libs/json文档.md)。

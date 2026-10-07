@@ -1434,7 +1434,7 @@ inline float run_case(int seq, int num_heads, int num_kv_heads, int head_dim) {
     fill_random(K, 2);
     fill_random(V, 3);
     const std::vector<float> want = reference(Q, K, V, seq, num_heads, num_kv_heads, head_dim);
-    attention(Q.data(), K.data(), V.data(), got.data(), seq, num_heads, num_kv_heads, head_dim);
+    attention(Q.data(), K.data(), V.data(), got.data(), seq, 0, num_heads, num_kv_heads, head_dim);
     return worst_err(got, want);
 }
 
@@ -1476,7 +1476,7 @@ bool check_attention() {
         fill_random(Q, 1);
         fill_random(K, 2);
         fill_random(V, 3);
-        attention(Q.data(), K.data(), V.data(), got.data(), seq, heads, kv, dim);
+        attention(Q.data(), K.data(), V.data(), got.data(), seq, 0, heads, kv, dim);
 
         bool ok = true;
         for (int h = 0; h < heads; h++) {
@@ -1501,12 +1501,12 @@ bool check_attention() {
         fill_random(Q, 1);
         fill_random(K, 2);
         fill_random(V, 3);
-        attention(Q.data(), K.data(), V.data(), a.data(), seq, heads, kv, dim);
+        attention(Q.data(), K.data(), V.data(), a.data(), seq, 0, heads, kv, dim);
 
         for (size_t i = skv / seq; i < skv; i++) {   // 把 j>=1 的 V 全改掉
             V[i] += 100.0f;
         }
-        attention(Q.data(), K.data(), V.data(), b.data(), seq, heads, kv, dim);
+        attention(Q.data(), K.data(), V.data(), b.data(), seq, 0, heads, kv, dim);
 
         bool ok = true;
         for (int h = 0; h < heads; h++) {
@@ -1537,7 +1537,7 @@ bool check_attention() {
             V[j * dim + 2] = c0;
             V[j * dim + 3] = c1;
         }
-        attention(Q.data(), K.data(), V.data(), got.data(), seq, heads, kv, dim);
+        attention(Q.data(), K.data(), V.data(), got.data(), seq, 0, heads, kv, dim);
 
         bool ok = true;
         for (size_t i = 0; i < got.size(); i++) {
@@ -1561,7 +1561,7 @@ bool check_attention() {
         for (size_t i = 0; i < sq; i++) Q[i] = 5000.0f + static_cast<float>(i % 7);
         for (size_t i = 0; i < skv; i++) K[i] = 5000.0f + static_cast<float>(i % 5);
         for (size_t i = 0; i < skv; i++) V[i] = 1.0f;
-        attention(Q.data(), K.data(), V.data(), got.data(), seq, heads, kv, dim);
+        attention(Q.data(), K.data(), V.data(), got.data(), seq, 0, heads, kv, dim);
 
         bool ok = true;
         for (size_t i = 0; i < got.size(); i++) {
@@ -1583,7 +1583,7 @@ bool check_attention() {
         std::vector<float> V(static_cast<size_t>(seq) * kv * dim, 1.0f);
         std::vector<float> got(static_cast<size_t>(seq) * heads * dim, 0.0f);
         try {
-            attention(Q.data(), K.data(), V.data(), got.data(), seq, heads, kv, dim);
+            attention(Q.data(), K.data(), V.data(), got.data(), seq, 0, heads, kv, dim);
             printf("诊断: heads=3 kv=2 -> 没拊异常，out[0]=%.1f\n",
                    static_cast<double>(got[0]));
         } catch (const std::exception& e) {
@@ -2131,7 +2131,7 @@ bool check_generate() {
 //  check_kv_cache() —— KV cache
 //
 //  被测对象：date_libs/date.h        __KVcache
-//            attention/attention.h   attention_kv()
+//            attention/attention.h   attention()
 //            transformer_layer.h     带 cache 的 transformer_layer()
 //            forward.h               forward_cached()
 //            generate.h              generate_cached() / generate()
@@ -2173,7 +2173,7 @@ bool check_kv_cache() {
         std::vector<float> Q, K, Vv;
         make_qkv(Q, K, Vv);
         std::vector<float> full((size_t)N * QDIM, 0.0f);
-        attention_classic(Q.data(), K.data(), Vv.data(), full.data(), N, NH, NKV, HD);
+        attention(Q.data(), K.data(), Vv.data(), full.data(), N, 0, NH, NKV, HD);
 
         __KVcache c;
         c.init(NL, MSEQ, NKV, HD);
@@ -2184,8 +2184,8 @@ bool check_kv_cache() {
             std::vector<float> ks(K.begin() + (size_t)off * KVDIM, K.begin() + (size_t)(off + seg) * KVDIM);
             std::vector<float> vs(Vv.begin() + (size_t)off * KVDIM, Vv.begin() + (size_t)(off + seg) * KVDIM);
             std::vector<float> os((size_t)seg * QDIM, 0.0f);
-            attention_kv(qs.data(), ks.data(), vs.data(), os.data(), seg, off, NH, NKV, HD,
-                         c.k_ptr(0, 0), c.v_ptr(0, 0), c.max_seq);
+            attention(qs.data(), ks.data(), vs.data(), os.data(), seg, off, NH, NKV, HD,
+                     c.k_ptr(0, 0), c.v_ptr(0, 0), c.max_seq);
             for (size_t i = 0; i < os.size(); i++) got[(size_t)off * QDIM + i] = os[i];
         }
         bool ok = true;
@@ -2202,7 +2202,7 @@ bool check_kv_cache() {
         __KVcache c;
         c.init(NL, MSEQ, NKV, HD);
         std::vector<float> out((size_t)N * QDIM, 0.0f);
-        attention_kv(Q.data(), K.data(), Vv.data(), out.data(), N, 0, NH, NKV, HD,
+        attention(Q.data(), K.data(), Vv.data(), out.data(), N, 0, NH, NKV, HD,
                      c.k_ptr(0, 0), c.v_ptr(0, 0), c.max_seq);
         bool ok = true;
         for (size_t i = 0; i < K.size(); i++)
@@ -2353,7 +2353,7 @@ bool check_kv_cache() {
         try {
             std::vector<float> q((size_t)2 * 3 * HD, 0.0f), k((size_t)2 * 2 * HD, 0.0f);
             std::vector<float> v((size_t)2 * 2 * HD, 0.0f), o((size_t)2 * 3 * HD, 0.0f);
-            attention_kv(q.data(), k.data(), v.data(), o.data(), 2, 0, 3, 2, HD,
+            attention(q.data(), k.data(), v.data(), o.data(), 2, 0, 3, 2, HD,
                          nullptr, nullptr, 0);
         } catch (const std::exception& e) {
             ok_hd = (std::string(e.what()).find("整除") != std::string::npos);

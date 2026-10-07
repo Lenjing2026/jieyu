@@ -12,6 +12,7 @@
 #include <windows.h>
 #endif
 
+#include <chrono>
 #include <iostream>
 #include <ostream>
 #include <string>
@@ -36,6 +37,7 @@ struct ModelRefs {
     bool qkv_bias = false;
     bool add_bos = true;
     std::string s_start, s_end, s_text;
+    std::string s_user, s_asst, s_turn;
     int q_dim() const { return num_heads * head_dim; }
     int kv_dim() const { return num_kv_heads * head_dim; }
     void free() {
@@ -220,9 +222,15 @@ struct EchoSink {
     int nsp;
     const std::string* stops;
     int nstop;
+    std::chrono::steady_clock::time_point t0, t_first, t_last;
+    int ntok;
 };
 inline bool echo_token(int id, void* ud) {
     EchoSink* s = static_cast<EchoSink*>(ud);
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (s->ntok == 0) s->t_first = now;
+    s->t_last = now;
+    s->ntok++;
     for (int i = 0; i < s->nsp; i++) {
         if (id == s->sp[i]) return true;
     }
@@ -249,7 +257,7 @@ inline bool echo_token(int id, void* ud) {
 inline int generate_text(const json_libs::Tokenizer& tok, const std::string& prompt, const ModelRefs& m,
                          int max_new, float temperature, std::string& out,
                          bool add_bos = true, std::ostream* echo = nullptr,
-                         float repetition_penalty = 1.0f) {
+                         float repetition_penalty = 1.0f, bool show_speed = false) {
     std::vector<int32_t> ids = tok.encode(prompt);
     const int32_t bos = tok.bos_id();
     if (add_bos && bos >= 0 && bos < m.vocab_size) ids.insert(ids.begin(), bos);
@@ -295,13 +303,19 @@ inline int generate_text(const json_libs::Tokenizer& tok, const std::string& pro
     want_eos((long long)model.s_token.meesage_end);
     const int32_t* eos_ptr = (num_eos > 0) ? eos_list : nullptr;
     out.clear();
-    const std::string stops[3] = {m.s_start, m.s_end, m.s_text};
-    EchoSink sink{&tok, &out, echo, std::string(), {0, 0, 0}, 0, stops, 3};
+    const std::string cand[6] = {m.s_start, m.s_end, m.s_text, m.s_user, m.s_asst, m.s_turn};
+    std::string stops[6];
+    int nstop = 0;
+    for (const std::string& c : cand) {
+        if (!c.empty()) stops[nstop++] = c;
+    }
+    EchoSink sink{&tok, &out, echo, std::string(), {0, 0, 0}, 0, stops, nstop, {}, {}, {}, 0};
     const uint64_t spec[3] = {model.s_token.message_start, model.s_token.meesage_end,
                               model.s_token.text_end};
     for (int i = 0; i < 3; i++) {
         if (spec[i] != 0) sink.sp[sink.nsp++] = (int32_t)spec[i];
     }
+    sink.t0 = std::chrono::steady_clock::now();
     const int len = generate(in_ids.data(), prompt_len, eos_ptr, num_eos,
                              m.embed, m.lm_head, m.layers.data(), m.num_layers, m.final_norm,
                              m.rope.cos.data(), m.rope.sin.data(), m.max_seq, max_new,
@@ -309,14 +323,32 @@ inline int generate_text(const json_libs::Tokenizer& tok, const std::string& pro
                              m.head_dim, m.intermediate, out_ids.data(), repetition_penalty,
                              echo_token, &sink);
     if (echo != nullptr) {
-        const size_t at = marker_at(*sink.out, stops, 3);
+        const size_t at = marker_at(*sink.out, stops, nstop);
         if (at != std::string::npos) {
             sink.out->erase(at);
-            const size_t pm = marker_at(sink.pending, stops, 3);
+            const size_t pm = marker_at(sink.pending, stops, nstop);
             if (pm != std::string::npos) sink.pending.erase(pm);
         }
         if (!sink.pending.empty()) *echo << sink.pending;
         *echo << std::endl;
+    }
+    if (show_speed && sink.ntok > 0) {
+        const std::chrono::steady_clock::time_point t_end = std::chrono::steady_clock::now();
+        const double pre_s = std::chrono::duration<double>(sink.t_first - sink.t0).count();
+        const double dec_s = std::chrono::duration<double>(sink.t_last - sink.t_first).count();
+        const double total = std::chrono::duration<double>(t_end - sink.t0).count();
+        const int dec_n = sink.ntok - 1;
+        const double pre_v = (prompt_len > 0 && pre_s > 0.0) ? prompt_len / pre_s : 0.0;
+        const double dec_v = (dec_n > 0 && dec_s > 0.0) ? dec_n / dec_s : 0.0;
+        std::cout << "[速度] 预填充 " << prompt_len << " token，" << pre_s << " 秒（" << pre_v
+                  << " token/秒）\n";
+        if (dec_n > 0) {
+            std::cout << "       解码   " << dec_n << " token，" << dec_s << " 秒（" << dec_v
+                      << " token/秒，" << (dec_v > 0.0 ? 1000.0 / dec_v : 0.0) << " 毫秒/token）\n";
+        } else {
+            std::cout << "       解码   0 token（这次没进解码阶段）\n";
+        }
+        std::cout << "       总用时 " << total << " 秒" << std::endl;
     }
     return len - prompt_len;
 }
@@ -328,6 +360,7 @@ struct LoadedModel {
     std::string s_start, s_end;
     std::string s_system;
     std::string s_name;
+    std::string s_user, s_asst, s_bos, s_turn_end;
 
     void free() {
         refs.free();
@@ -369,9 +402,20 @@ inline bool load_model_dir(LoadedModel& out, const std::string& dir, int max_seq
     out.refs.s_text = read_info_str(info, "text_end", "");
     out.s_system = read_info_str(info, "system", "");
     out.s_name = read_info_str(info, "source_name", "");
+    out.s_user = read_info_str(info, "user_start", "");
+    out.s_asst = read_info_str(info, "assistant_start", "");
+    out.s_bos = read_info_str(info, "bos_text", "");
+    out.s_turn_end = read_info_str(info, "turn_end", "");
+    out.refs.s_user = out.s_user;
+    out.refs.s_asst = out.s_asst;
+    out.refs.s_turn = out.s_turn_end;
     model.s_token.message_start = register_special(out.tokenizer, out.s_start);
     model.s_token.meesage_end = register_special(out.tokenizer, out.s_end);
     model.s_token.text_end = register_special(out.tokenizer, read_info_str(info, "text_end", ""));
+    register_special(out.tokenizer, out.s_user);
+    register_special(out.tokenizer, out.s_asst);
+    register_special(out.tokenizer, out.s_bos);
+    register_special(out.tokenizer, out.s_turn_end);
     return true;
 }
 
@@ -415,7 +459,8 @@ inline std::string acp_to_utf8(const std::string& text) {
 #endif
 }
 
-inline int run_chat(LoadedModel& m, int max_new, float temperature, float repetition_penalty = 1.1f) {
+inline int run_chat(LoadedModel& m, int max_new, float temperature, float repetition_penalty = 1.1f,
+                    bool show_speed = false) {
     const std::string& p_start = m.s_start;
     const std::string& p_end = m.s_end;
     auto has_base=[](const std::string& s)->bool{
@@ -431,9 +476,11 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
     };
     const bool looks_base = has_base(m.s_name) || has_base(m.dir);
     const bool templated = !looks_base && (p_start == "<|im_start|>" && p_end == "<|im_end|>");
+    const bool ds = !looks_base && !m.s_user.empty() && !m.s_asst.empty();
     std::string sys = m.s_system;
     if (templated && sys.empty()) sys = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
-    const std::string sys_turn = templated ? (p_start + "system\n" + sys + p_end + "\n") : std::string();
+    std::string sys_turn = templated ? (p_start + "system\n" + sys + p_end + "\n") : std::string();
+    if (ds) sys_turn = m.s_bos + sys;
 
     std::cout << "模型已装载：" << m.dir << "\n";
     std::cout << "  hidden=" << m.refs.hidden << " layers=" << m.refs.num_layers
@@ -447,7 +494,9 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
         std::cout << "，不限（生成到 <|im_end|> / 上下文满为止）";
     }
     std::cout << "\n";
-    std::cout << "  对话模板 " << (templated ? "开（<|im_start|>…<|im_end|>）" : "关（纯续写）");
+    std::cout << "  对话模板 " << (templated ? "开（<|im_start|>…<|im_end|>）"
+                                            : ds ? "开（<｜User｜>…<｜Assistant｜>，DeepSeek 风格）"
+                                                 : "关（纯续写）");
     if (looks_base) {
         std::cout << "\n  [注意] 这看着是 base 模型"
                   << (m.s_name.empty() ? std::string() : ("（" + m.s_name + "）"))
@@ -472,6 +521,7 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
         if (prompt.empty()) continue;
         std::string turn = prompt;
         if (templated) turn = p_start + "user\n" + prompt + p_end + "\n";
+        else if (ds) turn = m.s_user + prompt + "\n" + m.s_asst + "\n";
         std::string feed = sys_turn;
         for (const std::string& t : turns) feed += t;
         feed += turn;
@@ -480,7 +530,8 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
                   << turns.size() << " 轮]" << std::endl;
         std::string out;
         const int produced = generate_text(m.tokenizer, feed, m.refs, max_new, temperature,
-                                           out, m.refs.add_bos, &std::cout, repetition_penalty);
+                                           out, m.refs.add_bos, &std::cout, repetition_penalty,
+                                           show_speed);
         if (produced < 0) {
             std::cout << "(生成失败)" << std::endl;
             continue;
@@ -489,16 +540,21 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
             turns.push_back(turn + p_start + "assistant\n" + out + p_end + "\n");
             while (turns.size() > 8) turns.erase(turns.begin());
         }
+        if (ds && produced > 0) {
+            turns.push_back(turn + out + m.s_turn_end);
+            while (turns.size() > 8) turns.erase(turns.begin());
+        }
     }
     std::cout << std::endl;
     return 0;
 }
 
 inline int run_once(LoadedModel& m, const std::string& prompt, int max_new, float temperature,
-                    float repetition_penalty = 1.1f) {
+                    float repetition_penalty = 1.1f, bool show_speed = false) {
     std::string out;
     const int produced = generate_text(m.tokenizer, prompt, m.refs, max_new, temperature,
-                                       out, m.refs.add_bos, &std::cout, repetition_penalty);
+                                       out, m.refs.add_bos, &std::cout, repetition_penalty,
+                                       show_speed);
     if (produced <= 0) {
         std::cout << "(没有生成任何 token)" << std::endl;
         return produced;
