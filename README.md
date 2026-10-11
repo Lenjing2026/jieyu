@@ -1,4 +1,4 @@
-# JieYuAI
+# 解语
 
 从零手写的 AI 推理框架（纯 C++17，header-only，无第三方依赖）。
 
