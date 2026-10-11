@@ -1,78 +1,18 @@
-# 解语
+# JieYuAI
 
 从零手写的 AI 推理框架（纯 C++17，header-only，无第三方依赖）。
 
 从字节级 BPE 分词、JSON、二进制模型文件，到 Transformer 各算子（RMSNorm / RoPE / GQA / SwiGLU）
-和整层前向，全部自己实现。
-
-## 目录结构
-
-```
-JieYuAI/
-├── main.cpp                    入口：初始化 + 跑全部自测
-├── CMakeLists.txt
-├── jieyu.exe                   构建产物（直接产出到根目录）
-├── libs/
-│   ├── libs.h                  一站式入口头（include 这个就够了）
-│   ├── setup.h                 工程初始化（create_config_file / setup_way）
-│   ├── json_libs/              JSON 读写（手写递归下降解析器，拆成 4 个头）
-│   │   ├── file_util.h         文件读写 / 相对路径解析 / UTF-8 / 按行切分
-│   │   ├── json_value.h        JSON 值模型 + 序列化（2 空格自动格式化）
-│   │   ├── json_parser.h       递归下降解析器 + 类型自动识别
-│   │   ├── json.h              json_libs::json_lib 类
-│   │   └── json文档.md          JSON 模块使用文档
-│   ├── tokenizer_libs/         字节级 BPE 分词器 + 训练器
-│   │   ├── include/            tokenizer.h / trainer.h / byte_vocab.h（复用 json_libs）
-│   │   └── README.md           分词器详细文档
-│   ├── matmul_libs/            matmul（朴素 / AVX / FMA / AVX+FMA 运行时分发）
-│   ├── mapp_libs/              Windows 内存映射（load_model_map / free_model_map）
-│   ├── date_libs/              date.h（ModelInfo / LayerWeights / RoPETable）、check_cpu.h
-│   ├── model_libs/             模型层
-│   │   ├── silu/               SiLU 激活
-│   │   ├── ffn/                SwiGLU 前向
-│   │   ├── rmsnorm/            RMSNorm
-│   │   ├── rope/               RoPE 旋转位置编码
-│   │   ├── attention/          因果 GQA 注意力（整段 / 带 KV cache 两个入口）
-│   │   ├── transformer_layer.h 单个 block 前向（带 cache 与不带 cache 两个重载）
-│   │   ├── bfile.h            model.bf v2 格式：头部 / 张量目录 / 读写（含流式写）
-│   │   ├── creater_model.h     生成空的 model.bf（只有头部）
-│   │   ├── install_model.h     装载 model.bf（mmap + 校验 + 挂上张量表）
-│   │   ├── safetensors.h       读 HuggingFace safetensors（复用 json_libs 解析 header）
-│   │   ├── converter.h         safetensors -> model.bf（含造演示模型）
-│   │   ├── load_weights.h      按名字取权重指针，填进 layers[]
-│   │   ├── forward.h           多层串联 + 最终 RMSNorm（forward / forward_cached）
-│   │   ├── generate.h          自回归生成（KV cache + 采样 + EOS 停止）
-│   │   ├── pipeline.h          端到端：文本 -> token -> 生成 -> 文本
-│   │   ├── final_norm.h        逐行 RMSNorm（单独抽出）
-│   │   ├── lm_head.h           最后一行 * unembedding
-│   │   └── sampler.h           argmax / top-k 采样
-│   └── text/text.h             全部自测函数
-└── _file/                      数据目录（BPE 语料 / 模型文件 / 测试产物）
-    └── BPE/                    corpus.txt 输入，vocab.json + merges.txt 输出
-```
-
-## 构建
-
+和整层前向，全部自己实现。  
+使用前，该执行以下指令
 ```bash
-cmake -S . -B build -G "MinGW Makefiles"
-cmake --build build -j
+jieyu.exe -setup
 ```
-
-- 本机没装 VS，**必须**显式指定 MinGW 生成器
-- `cmake --build build -j` 才是编译；只写 `cmake build` 只是重新配置，不会编译
-- 产物 `jieyu.exe` 直接落到工程根目录（`RUNTIME_OUTPUT_DIRECTORY`）
-- 全部 header-only，不用 CMake 时一条 g++ 命令也行：
-
-```bash
-g++ -std=c++17 -O2 -Wall -Wextra -I. -Ilibs -Ilibs/json_libs -Ilibs/tokenizer_libs/include main.cpp -o jieyu
-```
-
-已验证工具链：g++ 16.2.0（WinLibs MinGW-w64 UCRT）+ CMake 4.4.3。
 
 ## 运行自测
 
 ```bash
-./jieyu.exe
+jieyu.exe -test
 ```
 
 运行即执行全部自测（每个模块都拿 double 精度参考实现逐元素比对）：
@@ -96,14 +36,24 @@ g++ -std=c++17 -O2 -Wall -Wextra -I. -Ilibs -Ilibs/json_libs -Ilibs/tokenizer_li
 
 ## 命令行用法
 
-```bash
-./jieyu.exe                                # 跑全部自测
-./jieyu.exe --demo                         # 造演示小模型：转换 + 文本进文本出
-./jieyu.exe --convert model.safetensors -o models/qwen2-0.5b
-./jieyu.exe --convert <HuggingFace 模型目录> -o models/qwen2-0.5b
-./jieyu.exe --show models/qwen2-0.5b/model.bf     # 打印张量目录
-./jieyu.exe --gen models/qwen2-0.5b "你好" 64 0.8 # 提示词 / 最多生成 / 温度
-./jieyu.exe --chat models/qwen2-0.5b 64 0.8       # 交互式，:q 退出
+```txt
+  jieyu -run <名字> [最多生成] [温度] [最大长度] [重复惩罚] [-tokenspeed]    装载 models/<名字> 并交互生成
+  jieyu -run                                     列出 models/ 下能跑的模型
+  jieyu -list                                    同上
+  jieyu -info <名字>                             看 models/<名字>/model_info.json 里的作者/描述
+  jieyu -download                                列出 download.json 里能下的模型
+  jieyu -download <名字>                         下载到 models/<名字>/（curl / wget / PowerShell 自动挑）
+  jieyu -setup                                   建目录/文件：config.json、langrage/、models/、_file/
+  jieyu -langrage [名字|{json}]                  切语言（写进 config.json），不带参数就看当前和可用语言
+  jieyu -demo [目录]                             造演示小模型，文本进文本出
+  jieyu -convert <safetensors...|xxx.gguf> -o <目录> [-config f] [-tokenizer d] [-dtype quant|f32|f16]
+  jieyu -gguf <xxx.gguf>                         看 GGUF：元数据 / 词表 / 量化分布 / 张量清单
+  jieyu -show <model.bf>                         打印 model.bf 的张量目录
+  jieyu -gen <模型目录> <提示词> [最多生成] [温度] [最大长度] [重复惩罚] [-tokenspeed]
+  jieyu -chat <模型目录> [最多生成] [温度] [最大长度] [重复惩罚] [-tokenspeed]
+  jieyu -?                                       看这份用法
+    （[最多生成] 省了或给 0 就是不限，生成到 <|im_end|> / 上下文满为止）
+    （-tokenspeed 跟在 -run / -gen / -chat 后面：每次生成完分开打印预填充与解码两段速度，位置随便放）
 ```
 
 `--convert` 会自动找同目录的 `config.json` 和 `vocab.json` / `merges.txt`，也可用
@@ -118,108 +68,6 @@ g++ -std=c++17 -O2 -Wall -Wextra -I. -Ilibs -Ilibs/json_libs -Ilibs/tokenizer_li
 生成    ijklmnopqrstuvwx
 ```
 
-## model.bf 文件格式（v2）
-
-小端；头部 64 字节，后面是张量目录区，最后是 64 字节对齐的数据区。
-
-| 偏移 | 字段 | 类型 |
-| --- | --- | --- |
-| 0..5 | 魔数 `JYAIBF` | char[6] |
-| 6..13 | hidden_size | uint64 |
-| 14..21 | layer_count | uint64 |
-| 22 | mode | uint8 |
-| 23 | num_heads | uint8 |
-| 24 | num_kv_heads | uint8 |
-| 25 | head_dim | uint8 |
-| 26..29 | intermediate_size | uint32 |
-| 30..37 | vocab_size | uint64 |
-| 38..41 | version（v2 = 2；老文件是 0） | uint32 |
-| 42..45 | tensor_count | uint32 |
-| 46..49 | data_off（数据区起点，64 对齐） | uint32 |
-| 50..53 | entry_size（= 104） | uint32 |
-| 54..63 | 零填充 | — |
-| 64..data_off | 张量目录：`tensor_count` 项，每项 104 字节 | — |
-| data_off..文件尾 | 数据区：每个张量 64 字节对齐 | — |
-
-目录项 104 字节：
-
-| 偏移 | 字段 | 类型 |
-| --- | --- | --- |
-| 0..63 | 张量名（nul 结尾，最长 63 字符） | char[64] |
-| 64 | dtype（0=f32 1=f16 2=bf16 3=i8 4=i32） | uint8 |
-| 65 | ndim（最多 4） | uint8 |
-| 68..83 | shape[4] | uint32 ×4 |
-| 88..95 | offset（相对数据区） | uint64 |
-| 96..103 | nbytes | uint64 |
-
-- 没有张量的空模型就是 64 字节的头；老格式（version = 0）也能被认出，只是没有目录
-- 装载时 `install_model` 会把 mmap 指针包成 `bfile::View` 挂在张量表上，
-  之后用 `find_tensor("名字")` 就能拿到指针，全程零拷贝
-- 配套 `model_info.json` 提供同样字段，另外还有 `rope_theta` 给 RoPE 用
-
-## 权重布局（很容易踩的坑）
-
-本工程的 `matmul` 语义是 $C_{[m,n]} = A_{[m,k]} \times B_{[k,n]}$，也就是 **B 要按 `[k, n]` 存**；
-而 HuggingFace 的 `nn.Linear` 权重是 `[out_features, in_features] = [n, k]`。
-
-所以**转换器会把所有二维权重转置**：
-
-| 张量 | HF 形状 | model.bf 里的形状 |
-| --- | --- | --- |
-| `model.embed_tokens.weight` | `[vocab, hidden]` | 不动（查表用） |
-| `self_attn.{q,k,v}_proj.weight` | `[q_dim, hidden]` | `[hidden, q_dim]` |
-| `self_attn.o_proj.weight` | `[hidden, q_dim]` | `[q_dim, hidden]` |
-| `mlp.gate_proj.weight` / `up_proj` | `[inter, hidden]` | `[hidden, inter]` |
-| `mlp.down_proj.weight` | `[hidden, inter]` | `[inter, hidden]` |
-| `lm_head.weight` | `[vocab, hidden]` | `[hidden, vocab]` |
-| `*layernorm.weight` / `model.norm.weight` | `[hidden]` | 不动 |
-
-`bind_model()` 会按这张表逐项校验形状，转置漏了会直接报错并打印实际/期望形状，不会静默算错。
-
-## KV cache
-
-`date_libs/date.h` 里的 `__KVcache` 是唯一的缓存结构，布局是连续一段：
-
-```text
-k/v: [num_layers][max_seq][num_kv_heads][head_dim]
-```
-
-三个入口，逐层往上：
-
-| 函数 | 位置 | 作用 |
-| --- | --- | --- |
-| `attention(Q,K,V,out,seq,start_pos,...,ck,cv,kv_cap)` | `attention/attention.h` | 把本段新 K/V 写进 `[start_pos, start_pos+seq)`，查询 `i` 注意 `0..start_pos+i` |
-| `transformer_layer(...,start_pos,cache_k,cache_v,kv_cap)` | `transformer_layer.h` | 单层前向；两个 cache 指针传 `nullptr` 就退化成整段一次算 |
-| `forward_cached(X,layers,nl,...,seq,start_pos,cache,...)` | `forward.h` | 多层串联 + 最终 RMSNorm |
-| `generate_cached(...,cache,out_ids)` | `generate.h` | 第一步整段 prefill，之后每步 1 个 token |
-
-调用方自备一份 cache 就能跨多次调用复用：
-
-```cpp
-__KVcache cache;
-cache.init(num_layers, max_seq, num_kv_heads, head_dim);
-generate_cached(prompt, plen, eos, neos, embed, lm_head, layers, nl, final_norm,
-                cos_t, sin_t, max_seq, max_new, temp, vocab, hidden,
-                num_heads, num_kv_heads, head_dim, inter, cache, out_ids);
-```
-
-生成结束时 `cache.current_len` 是「已经喂进去的 token 数」。注意最后一个生成出来的 token 还没喂回缓存，所以想接着往下生成时，直接把 `current_len` 当 `start_pos`、喂 `out_ids[current_len]` 就行。
-
-`generate()` 保留了原签名，内部自己开一份 cache，一次性调用不用改代码。
-
-## 核心实现
-
-- **字节级 BPE**：UTF-8 按字节拆分并映射为可打印字符，任何字节序列都能无损往返，不存在 OOV；编码用双向链表 + 优先队列 + 版本号惰性失效做到 O(n log n)
-- **手写 JSON**：简化递归下降解析器，支持 `\uXXXX` 与代理对；写入时 2 空格自动格式化
-- **matmul 指令集分发**：运行时按 CPU 能力选 AVX+FMA / FMA / AVX / 朴素（`__builtin_cpu_supports` 探测）
-- **完整 Transformer 算子**：RMSNorm、RoPE、因果 GQA 注意力（减最大值 softmax）、SwiGLU FFN、整层与多层串联
-- **模型装载**：`model.bf` 走 Windows 内存映射，头部校验后按偏移读出各超参；v2 张量目录让权重可以直接按名字查，零拷贝
-- **safetensors 转换器**：纯 C++（不用 Python），自己解析 safetensors 的 JSON 头；转置、dtype 转换（f16/bf16 → f32）都在转换时做掉，不转置的张量分块流式读写，内存只占一块缓冲区
-- **自回归生成**：embed 查表 -> 前向 -> `lm_head` -> argmax / 温度采样 -> 追加 token，支持 EOS 提前停止
-- **KV cache**：prompt 整段 prefill 一次，之后每步只喂 1 个新 token，生成第 n 个 token 的注意力代价从 $O(n^2)$ 降到 $O(n)$。`__KVcache` 按 `[layer][seq][kv_head][head_dim]` 连续存放，K/V 跟着 RoPE 位置一起续算；「分段算」与「整段算」逐元素完全相同
-- **端到端管道**：`encode -> generate -> decode`，逐 token 解码并处理跨 token 的 UTF-8 多字节字符，不会被截断成乱码
-- **header-only**：没有 `src/*.cpp`，全部实现写在头文件里
-
 ## 已知限制
 
 - **RoPE 用的是相邻对风格**（`(2i, 2i+1)`，GPT-J / 原始 RoPE）；Llama / Qwen 权重用的是 NeoX 半分裂风格。两者不匹配时不会报错，只会静默算错，接入真实权重前必须确认
@@ -227,7 +75,5 @@ generate_cached(prompt, plen, eos, neos, embed, lm_head, layers, nl, final_norm,
 - **引擎只读 f32**：转换器支持写出 f16/bf16（格式里也有 dtype 字段），但 matmul 还没写对应分支
 - **转置要占内存**：单个二维权重转置时需要 `4 × 元素数` 的临时内存，转一个 0.5B 模型的 `lm_head` 大约 500 MB
 - **RoPE / RMSNorm / Attention 目前只有经典实现**，没有 AVX 版本（matmul / ffn 已有）
-- 每层前向都会分配临时缓冲区（带 cache 后每步只有 1 行，开销很小）
-
-详细的分词器文档见 [`libs/tokenizer_libs/README.md`](libs/tokenizer_libs/README.md)，
-JSON 模块见 [`libs/json_libs/json文档.md`](libs/json_libs/json文档.md)。
+- 每层前向都会分配临时缓冲区（带 cache 后每步只有 1 行，开销很小）  
+- 其他可见[Wiki](https://github.com/Lenjing2026/jieyu/wiki)
