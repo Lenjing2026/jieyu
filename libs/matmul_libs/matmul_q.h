@@ -7,10 +7,29 @@
 #include <immintrin.h>
 #include "../date_libs/wmat.h"
 #include "../date_libs/check_cpu.h"
+#include "../file_libs/q4/q4.h"
 
 namespace qmat {
 
 enum : uint8_t { Q4K = 0, Q5K = 1, Q6K = 2, Q8_0 = 3 };
+
+inline uint16_t u16(const unsigned char* p) {
+    uint16_t v;
+    std::memcpy(&v, p, 2);
+    return v;
+}
+
+inline float f16(const unsigned char* p) { return wmat::to_f32(u16(p)); }
+
+inline void get_scale_min_k4(int j,const unsigned char* q,unsigned char& sc,unsigned char& mn) {
+    if (j < 4) {
+        sc = (unsigned char)(q[j] & 63);
+        mn = (unsigned char)(q[j + 4] & 63);
+    } else {
+        sc = (unsigned char)((q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4));
+        mn = (unsigned char)((q[j + 4] >> 4) | ((q[j] >> 6) << 4));
+    }
+}
 
 inline size_t block_elems(uint8_t t) { return t == Q8_0 ? 32 : 256; }
 
@@ -30,74 +49,11 @@ inline size_t row_bytes(uint8_t t, int width) {
     return (size_t)width / be * block_bytes(t);
 }
 
-inline uint16_t u16(const unsigned char* p) {
-    uint16_t v;
-    std::memcpy(&v, p, 2);
-    return v;
-}
-
-inline float f16(const unsigned char* p) { return wmat::to_f32(u16(p)); }
-
-inline void get_scale_min_k4(int j, const unsigned char* q, unsigned char& sc, unsigned char& mn) {
-    if (j < 4) {
-        sc = (unsigned char)(q[j] & 63);
-        mn = (unsigned char)(q[j + 4] & 63);
-    } else {
-        sc = (unsigned char)((q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4));
-        mn = (unsigned char)((q[j + 4] >> 4) | ((q[j] >> 6) << 4));
-    }
-}
-
-__attribute__((target("avx2,fma")))
-inline void dequant_q4k_avx2(const unsigned char* b, float* dst) {
-    const float d = f16(b), dmin = f16(b + 2);
-    const unsigned char* sc = b + 4;
-    const unsigned char* qs = b + 16;
-    int is = 0;
-    for (int g = 0; g < 4; g++) {
-        unsigned char s0, m0, s1, m1;
-        get_scale_min_k4(is, sc, s0, m0);
-        get_scale_min_k4(is + 1, sc, s1, m1);
-        const __m256 dd1 = _mm256_set1_ps(d * (float)s0), mm1 = _mm256_set1_ps(-dmin * (float)m0);
-        const __m256 dd2 = _mm256_set1_ps(d * (float)s1), mm2 = _mm256_set1_ps(-dmin * (float)m1);
-        for (int l = 0; l < 32; l += 16) {
-            const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(qs + l));
-            const __m128i lo = _mm_and_si128(v, _mm_set1_epi8(0x0F));
-            const __m128i hi = _mm_and_si128(_mm_srli_epi16(v, 4), _mm_set1_epi8(0x0F));
-            const __m256 l0 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(lo));
-            const __m256 l1 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(lo, 8)));
-            const __m256 h0 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(hi));
-            const __m256 h1 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(hi, 8)));
-            _mm256_storeu_ps(dst + g * 64 + l, _mm256_fmadd_ps(l0, dd1, mm1));
-            _mm256_storeu_ps(dst + g * 64 + l + 8, _mm256_fmadd_ps(l1, dd1, mm1));
-            _mm256_storeu_ps(dst + g * 64 + 32 + l, _mm256_fmadd_ps(h0, dd2, mm2));
-            _mm256_storeu_ps(dst + g * 64 + 32 + l + 8, _mm256_fmadd_ps(h1, dd2, mm2));
-        }
-        qs += 32;
-        is += 2;
-    }
-}
-
 inline void dequant_block(uint8_t t, const void* src, float* dst) {
     const unsigned char* b = static_cast<const unsigned char*>(src);
     switch (t) {
         case Q4K: {
-            if (cpu_can.avx2 && cpu_can.fma3) { dequant_q4k_avx2(b, dst); return; }
-            const float d = f16(b), dmin = f16(b + 2);
-            const unsigned char* sc = b + 4;
-            const unsigned char* qs = b + 16;
-            int is = 0;
-            for (int g = 0; g < 4; g++) {
-                unsigned char s0, m0, s1, m1;
-                get_scale_min_k4(is, sc, s0, m0);
-                get_scale_min_k4(is + 1, sc, s1, m1);
-                const float d1 = d * (float)s0, n1 = dmin * (float)m0;
-                const float d2 = d * (float)s1, n2 = dmin * (float)m1;
-                for (int l = 0; l < 32; l++) dst[g * 64 + l] = d1 * (float)(qs[l] & 0xF) - n1;
-                for (int l = 0; l < 32; l++) dst[g * 64 + 32 + l] = d2 * (float)(qs[l] >> 4) - n2;
-                qs += 32;
-                is += 2;
-            }
+            dequant_q4k(b, dst);
             return;
         }
         case Q5K: {
