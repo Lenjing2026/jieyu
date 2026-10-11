@@ -1,5 +1,6 @@
 #include"libs/libs.h"
 #include"libs/text/text.h"
+#include"libs/download.h"
 #include<shellapi.h>
 using namespace std;
 using namespace json_libs;
@@ -12,6 +13,8 @@ inline void usage(){
         <<"  jieyu -run                                     列出 models/ 下能跑的模型\n"
         <<"  jieyu -list                                    同上\n"
         <<"  jieyu -info <名字>                             看 models/<名字>/model_info.json 里的作者/描述\n"
+        <<"  jieyu -download                                列出 download.json 里能下的模型\n"
+        <<"  jieyu -download <名字>                         下载到 models/<名字>/（curl / wget / PowerShell 自动挑）\n"
         <<"  jieyu -setup                                   建目录/文件：config.json、langrage/、models/、_file/\n"
         <<"  jieyu -langrage [名字|{json}]                  切语言（写进 config.json），不带参数就看当前和可用语言\n"
         <<"  jieyu -demo [目录]                             造演示小模型，文本进文本出\n"
@@ -86,6 +89,18 @@ inline int list_models(){
     }
     if(n==0) cout<<"  （空的，先 jieyu -convert <xxx.gguf> -o models/<名字>）\n";
     return n==0?1:0;
+}
+
+inline int list_download(){
+    json_lib j;
+    if(!j.SetJsonWay("download.json")&&!download_json()){ cout<<"拉不到 download.json（看看网络/代理）\n"; return 1; }
+    if(!j.SetJsonWay("download.json")){ cout<<"download.json 解析不了："<<j.LastError()<<"\n"; return 1; }
+    cout<<"能下的模型（jieyu -download <名字>）：\n";
+    const vector<string> keys=j.Keys();
+    for(const auto& k:keys)
+        cout<<"  "<<k<<(is_directory(path("models")/k)?"\t（已下载）":"")<<"\n";
+    if(keys.empty()) cout<<"  （空的）\n";
+    return 0;
 }
 
 inline int demo(string root){
@@ -428,6 +443,14 @@ inline int main_impl(int argc,char** argv){
     }
     if(mode=="list"){
         return list_models();
+    }
+    if(mode=="download"||mode=="dl"){
+        if(argc<3) return list_download();
+        const string name=pipeline::acp_to_utf8(argv[2]);
+        cout<<"开始下载 "<<name<<" ——在 models/"<<name<<"/ 下\n";
+        if(!download(name)){ cout<<"下载失败（名字要和 download.json 里的键一模一样；网络/代理也要通）\n"; return 1; }
+        cout<<"下载完成  models/"<<name<<"\n";
+        return 0;
     }
     if(mode=="info" && argc==3){
         const string name=pipeline::acp_to_utf8(argv[2]);

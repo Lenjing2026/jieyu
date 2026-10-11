@@ -1,0 +1,16 @@
+{
+    "Qwen2.5-1.5B-Instruct_q4":{
+        "begin":"https://github.com/Lenjing2026/Jieyu_modle_downlond/releases/download/qwen-1.5B-q4/",
+        "merges":"merges.txt",
+        "model":"model.bf",
+        "model_info":"model_info.json",
+        "vocab":"vocab.json"
+    },
+    "Qwen2.5-3B-Instruct_q4":{
+        "begin":"https://github.com/Lenjing2026/Jieyu_modle_downlond/releases/download/Qwen2.5-3B-Instruct_q4/",
+        "merges":"merges.txt",
+        "model":"model.bf",
+        "model_info":"model_info.json",
+        "vocab":"vocab.json"
+    }
+}
