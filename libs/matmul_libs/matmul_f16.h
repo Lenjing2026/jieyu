@@ -1,8 +1,8 @@
-#ifndef MATMUL_F16_H
+﻿#ifndef MATMUL_F16_H
 #define MATMUL_F16_H
-#include <cstdint>
-#include <immintrin.h>
-#include "../date_libs/wmat.h"
+#include<cstdint>
+#include<immintrin.h>
+#include"../date_libs/wmat.h"
 
 void matmul_f16_classic(const float* a,const uint16_t* b,float* c,int m,int n,int k){
     #pragma omp parallel for if(m>=4)
@@ -37,4 +37,4 @@ void matmul_f16_avx_fma(const float* a,const uint16_t* b,float* c,int m,int n,in
     }
 }
 
-#endif  // MATMUL_F16_H
+#endif

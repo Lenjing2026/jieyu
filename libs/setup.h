@@ -1,4 +1,4 @@
-#ifndef SETUP_H
+﻿#ifndef SETUP_H
 #define SETUP_H
 #include<filesystem>
 #include<fstream>
@@ -64,4 +64,4 @@ string tr(const string& key,const string& fallback=""){
     }
     return fallback.empty()?key:fallback;
 }
-#endif  // SETUP_H
+#endif

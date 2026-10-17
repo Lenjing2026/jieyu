@@ -1,4 +1,4 @@
-#ifndef forward_h
+﻿#ifndef forward_h
 #define forward_h
 #include <cstring>
 #include <stdexcept>
@@ -15,7 +15,7 @@ void forward(
     int seq, int hidden,
     int num_heads, int num_kv_heads,
     int head_dim, int intermediate
-){
+        ){
     const size_t q_dim=(size_t)num_heads*head_dim,kv_dim=(size_t)num_kv_heads*head_dim;
     prefetch::layer(layers[0],(size_t)hidden,q_dim,kv_dim,(size_t)intermediate);
     for (int l=0;l<num_layers;l++){
@@ -56,7 +56,7 @@ void forward_cached(
     int hidden,
     int num_heads, int num_kv_heads,
     int head_dim, int intermediate
-){
+        ){
     if(cache.num_layers<num_layers||cache.num_kv_heads!=num_kv_heads||cache.head_dim!=head_dim)
         throw std::runtime_error("forward: KV cache 尺寸与模型不符");
     if(start_pos<0) throw std::runtime_error("forward: start_pos 不能为负");

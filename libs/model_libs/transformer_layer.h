@@ -1,4 +1,4 @@
-#ifndef transformer_layer_h
+﻿#ifndef transformer_layer_h
 #define transformer_layer_h
 #include <vector>
 #include "ffn/ffn.h"
@@ -26,7 +26,7 @@ void transformer_layer(
     int head_dim, int intermediate,
     int start_pos, float* cache_k, float* cache_v, int kv_cap,
     float eps=1e-5f
-) {
+        ) {
     int q_dim=num_heads*head_dim;
     int kv_dim=num_kv_heads*head_dim;
     std::vector<float> xn((size_t)seq*hidden);
@@ -97,7 +97,7 @@ void transformer_layer(
     int seq, int hidden, int num_heads, int num_kv_heads,
     int head_dim, int intermediate,
     float eps=1e-5f
-) {
+        ) {
     transformer_layer(X,rms1_weight,Wq,Wk,Wv,Wo,nullptr,nullptr,nullptr,
                       cos_table,sin_table,rms2_weight,W1,W2,W3,
                       seq,hidden,num_heads,num_kv_heads,head_dim,intermediate,
@@ -123,7 +123,7 @@ void transformer_layer(
     int seq, int hidden, int num_heads, int num_kv_heads,
     int head_dim, int intermediate,
     float eps=1e-5f
-) {
+        ) {
     transformer_layer(X,rms1_weight,Wq,Wk,Wv,Wo,bq,bk,bv,cos_table,sin_table,rms2_weight,
                       W1,W2,W3,seq,hidden,num_heads,num_kv_heads,head_dim,intermediate,
                       0,nullptr,nullptr,0,eps);

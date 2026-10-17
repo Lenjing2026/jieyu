@@ -1,9 +1,8 @@
-#ifndef MATMUL_AVX_H
+﻿#ifndef MATMUL_AVX_H
 #define MATMUL_AVX_H
-#include<omp.h>
-#include <immintrin.h>
+#include<immintrin.h>
 __attribute__((target("avx")))
-void matmul_avx(const float *a, const float *b, float *c, int m, int n, int k){
+void matmul_avx(const float *a,const float *b,float *c,int m,int n,int k){
     #pragma omp parallel for if(m>=4)
     for(int i=0;i<m;i++){
         float* crow=c+i*n;
@@ -25,4 +24,4 @@ void matmul_avx(const float *a, const float *b, float *c, int m, int n, int k){
         }
     }
 }
-#endif  // MATMUL_AVX_H
+#endif

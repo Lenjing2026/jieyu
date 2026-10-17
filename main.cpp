@@ -1,8 +1,10 @@
-#include"libs/libs.h"
+﻿#include"libs/libs.h"
 #include"libs/text/text.h"
 #include"libs/date_libs/consten_pool.h"
 #include<cstdio>
+#if defined(_WIN32)
 #include<shellapi.h>
+#endif
 using namespace std;
 using namespace json_libs;
 namespace cli {
@@ -162,7 +164,7 @@ inline int run_model(const string& dir,const string& prompt,int max_new,float te
     }
     printf("模型   %s\n",dir.c_str());
     const int code=chat?pipeline::run_chat(m,max_new,temperature,repetition_penalty,show_speed)
-                     :pipeline::run_once(m,prompt,max_new,temperature,repetition_penalty,show_speed);
+        :pipeline::run_once(m,prompt,max_new,temperature,repetition_penalty,show_speed);
     m.free();
     return code;
 }
@@ -298,7 +300,7 @@ inline int main_impl(int argc,char** argv){
     if(mode=="list"){
         return list_models();
     }
-    if(mode=="info" && argc==3){
+    if(mode=="info"&&argc==3){
         const string name=pipeline::acp_to_utf8(argv[2]);
         json_libs::json_lib temp;
         temp.SetJsonWay("models/"+name+"/model_info.json");
@@ -311,7 +313,7 @@ inline int main_impl(int argc,char** argv){
     return 1;
 }
 
-}  // namespace cli
+}
 
 #ifdef _WIN32
 string wide_to_utf8(const wchar_t* w){

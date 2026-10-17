@@ -1,13 +1,18 @@
-#ifndef DATE_LIBS_DATE_H
+﻿#ifndef DATE_LIBS_DATE_H
 #define DATE_LIBS_DATE_H
-#include<bits/stdc++.h>
+#include<cstdint>
+#include<filesystem>
+#include<string>
+#include<vector>
+#if defined(_WIN32)
 #include<windows.h>
+#endif
 #include"wmat.h"
 #include"../matmul_libs/matmul.h"
 using namespace std;
 using namespace std::filesystem;
 struct ModelInfo{
-    uint64_t h; 
+    uint64_t h;
     uint64_t l;
     uint8_t mode;
     uint8_t num_heads;
@@ -19,8 +24,13 @@ struct ModelInfo{
     path model_vector;
     path model_info;
     path model_tokenizer;
+#if defined(_WIN32)
     HANDLE model_handle;
     LPVOID model_map;
+#else
+    int model_handle=-1;
+    void* model_map=nullptr;
+#endif
     struct __s_token{
         uint64_t message_start;
         uint64_t meesage_end;
@@ -87,7 +97,7 @@ struct __KVcache{
         k.assign(size,0.0f);
         v.assign(size,0.0f);
     }
-    void free(){current_len=0;} //我免费了！！！！！！！！！！！！！！
+    void free(){current_len=0;}
     float* k_ptr(int l,int p){
         size_t o=((size_t)l*max_seq+p)*num_kv_heads*head_dim;
         return k.data()+o;
@@ -97,4 +107,4 @@ struct __KVcache{
         return v.data()+o;
     }
 };
-#endif  // DATE_LIBS_DATE_H
+#endif

@@ -1,11 +1,10 @@
-#ifndef generate_h
+﻿#ifndef generate_h
 #define generate_h
-#include <vector>
-#include <stdexcept>
-#include "../date_libs/date.h"
-#include "forward.h"
-#include "prefetch.h"
-// 每产出一个 token 就回调一次（流式输出用）；回调返回 true 表示该停了（碰到结束记号）
+#include<vector>
+#include<stdexcept>
+#include"../date_libs/date.h"
+#include"forward.h"
+#include"prefetch.h"
 typedef bool (*token_cb)(int id,void* ud);
 int generate_cached(
     const int* prompt_ids,int prompt_len,
@@ -22,10 +21,10 @@ int generate_cached(
     int* out_ids,
     float repetition_penalty=1.0f,
     token_cb cb=nullptr,void* cb_ud=nullptr
-){
+        ){
     if(prompt_len<=0||prompt_len>max_seq) return 0;
     if(cache.num_layers<num_layers||cache.max_seq<max_seq
-       ||cache.num_kv_heads!=num_kv_heads||cache.head_dim!=head_dim)
+        ||cache.num_kv_heads!=num_kv_heads||cache.head_dim!=head_dim)
         throw std::runtime_error("generate: KV cache 尺寸与模型不符");
     for(int i=0;i<prompt_len;i++)
         out_ids[i]=prompt_ids[i];
@@ -48,14 +47,12 @@ int generate_cached(
                        num_heads,num_kv_heads,head_dim,intermediate);
         const float* last=X.data()+(size_t)(seq-1)*hidden;
         matmul_w(lm_head,1,vocab_size,hidden,last,logits.data());
-        // 重复惩罚只压"这一轮自己生成的"——带上提示词的话，用户刚说的词会被压低，
-        // 贪心就会把 hello 挤成 hetoo 这种
         if(repetition_penalty!=1.0f)
             for(int i=prompt_len;i<len;i++){
                 const int id=out_ids[i];
                 if(id>=0&&id<vocab_size)
                     logits[id]=(logits[id]>0.0f)?logits[id]/repetition_penalty
-                                                 :logits[id]*repetition_penalty;
+                        :logits[id]*repetition_penalty;
             }
         int next=0;
         if(temperature<=0.0f){
@@ -104,7 +101,7 @@ int generate(
     int* out_ids,
     float repetition_penalty=1.0f,
     token_cb cb=nullptr,void* cb_ud=nullptr
-){
+        ){
     __KVcache cache;
     cache.init(num_layers,max_seq,num_kv_heads,head_dim);
     return generate_cached(prompt_ids,prompt_len,eos_ids,num_eos,embed,lm_head,

@@ -1,10 +1,10 @@
-#ifndef WMAT_KERNEL_H
+﻿#ifndef WMAT_KERNEL_H
 #define WMAT_KERNEL_H
-#include <cstring>
-#include "../date_libs/wmat.h"
-#include "../matmul_libs/matmul.h"
-#include "../matmul_libs/matmul_f16.h"
-#include "../matmul_libs/matmul_q.h"
+#include<cstring>
+#include"../date_libs/wmat.h"
+#include"../matmul_libs/matmul.h"
+#include"../matmul_libs/matmul_f16.h"
+#include"../matmul_libs/matmul_q.h"
 
 inline void matmul_w(const WMat& B,const int m,const int n,const int k,const float* A,float* C){
     if(B.f!=nullptr){ matmul(m,n,k,A,B.f,C); return; }
@@ -27,4 +27,4 @@ inline void wmat_row(const WMat& w,size_t id,int width,float* dst){
     }
     memset(dst,0,(size_t)width*sizeof(float));
 }
-#endif  // WMAT_KERNEL_H
+#endif

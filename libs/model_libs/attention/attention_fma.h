@@ -5,7 +5,6 @@
 #include <vector>
 #include <stdexcept>
 #include <immintrin.h>
-#include <omp.h>
 using namespace std;
 __attribute__((target("avx,fma")))
 void attention_fma(float* Q,float* K,float* V,float* out,int seq,int start_pos,

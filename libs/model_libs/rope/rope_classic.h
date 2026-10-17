@@ -1,6 +1,6 @@
 #ifndef ROPE_CLASSIC_H
 #define ROPE_CLASSIC_H
-#include<bits/stdc++.h>
+#include<cstddef>
 void rope_classic_at(float* q,int seq,int start_pos,int num_heads,int head_dim,const float* cos_table,const float* sin_table){
     int half=head_dim/2;
     #pragma omp parallel for if(seq>=32)

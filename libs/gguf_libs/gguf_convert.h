@@ -1,4 +1,4 @@
-#ifndef GGUF_CONVERT_H
+﻿#ifndef GGUF_CONVERT_H
 #define GGUF_CONVERT_H
 #include<algorithm>
 #include<cstdio>
@@ -18,7 +18,7 @@ namespace fs=std::filesystem;
 struct Options{
     string src,out_dir;
     uint8_t out_dtype=bfile::F32;
-    bool quant=true;      // 把 GGUF 里的 q4_K/q6_K 块原样搬过去（不反量化，最省）
+    bool quant=true;
     bool verbose=true;
 };
 
@@ -33,14 +33,13 @@ struct Result{
     string arch;
 };
 
-// 能原样搬的量化类型 → bfile 的 dtype 代号；不能就 -1
 inline int quant_code(uint32_t t){
     switch(t){
-        case gguf::T_Q4_K: return bfile::Q4K;
-        case gguf::T_Q5_K: return bfile::Q5K;
-        case gguf::T_Q6_K: return bfile::Q6K;
-        case gguf::T_Q8_0: return bfile::Q8_0;
-        default: return -1;
+        case gguf::T_Q4_K:return bfile::Q4K;
+        case gguf::T_Q5_K:return bfile::Q5K;
+        case gguf::T_Q6_K:return bfile::Q6K;
+        case gguf::T_Q8_0:return bfile::Q8_0;
+        default:return -1;
     }
 }
 
@@ -199,8 +198,6 @@ inline bfile::StreamTensor make_sink(const gguf::File& g,const gguf::Tensor& t,
     return s;
 }
 
-// 量化块原样搬：不反量化、不转置，只把行按需重排（q/k 置换）
-// 行 = 输出（embed 就是词），块沿 k
 inline bfile::StreamTensor make_raw_sink(const gguf::File& g,const gguf::Tensor& t,
                                          const string& name,bool permute,int head_dim,
                                          uint8_t dtype){
@@ -335,7 +332,6 @@ inline Result convert(const Options& opt){
     if(g.find("output.weight")==nullptr){
         if(emb==nullptr) throw runtime_error("gguf: 既没有 output.weight 也没有 token_embd.weight");
         r.tied_lm_head=true;
-        // 量化的 embed 本身就是“行=输出”，直接当 lm_head 用，不用再复制一份
         if(!(opt.quant&&quant_code(emb->type)>=0)){
             sinks.push_back(make_sink(g,*emb,"lm_head.weight",true,false,(int)hd,opt.out_dtype));
             r.transposed++;
@@ -390,10 +386,8 @@ inline Result convert(const Options& opt){
         info.WriteJsonKey("rope_style",string("adjacent_after_permute"));
         info.WriteJsonKey("source_arch",r.arch);
         info.WriteJsonKey("source_file",fs::path(opt.src).filename().string());
-        // 把 GGUF 里的 general.name 记下来：run 时要靠它认 base/instruct
         if(const gguf::Meta* nm=g.meta("general.name"))
             if(!nm->s.empty()) info.WriteJsonKey("source_name",nm->s);
-        // 特殊 token：从自带的词表里挑（Qwen 的 <|im_start|> 这类），挑到哪个写哪个
         if(const gguf::Meta* tk=g.meta("tokenizer.ggml.tokens")){
             auto pick=[&](const char* key,std::initializer_list<const char*> cands)->bool{
                 for(const char* c:cands)
@@ -404,11 +398,10 @@ inline Result convert(const Options& opt){
             pick("message_start",{"<|im_start|>","<|start_header_id|>"});
             pick("message_end",{"<|im_end|>","<|eot_id|>","<|end_of_turn|>"});
             pick("text_end",{"<|endoftext|>","<|end_of_text|>","</s>"});
-            // DeepSeek（R1 蒸馏）自己那套：｜ 是 U+FF5C、▁ 是 U+2581
-            const string ds_user ="<\xEF\xBD\x9C" "User" "\xEF\xBD\x9C>";
-            const string ds_asst ="<\xEF\xBD\x9C" "Assistant" "\xEF\xBD\x9C>";
+            const string ds_user="<\xEF\xBD\x9C" "User" "\xEF\xBD\x9C>";
+            const string ds_asst="<\xEF\xBD\x9C" "Assistant" "\xEF\xBD\x9C>";
             const string ds_begin="<\xEF\xBD\x9C" "begin" "\xE2\x96\x81" "of" "\xE2\x96\x81" "sentence" "\xEF\xBD\x9C>";
-            const string ds_end  = "<\xEF\xBD\x9C" "end" "\xE2\x96\x81" "of" "\xE2\x96\x81" "sentence" "\xEF\xBD\x9C>";
+            const string ds_end="<\xEF\xBD\x9C" "end" "\xE2\x96\x81" "of" "\xE2\x96\x81" "sentence" "\xEF\xBD\x9C>";
             auto has_token=[&](const string& s)->bool{
                 for(const string& t:tk->strs) if(t==s) return true;
                 return false;
@@ -427,5 +420,5 @@ inline Result convert(const Options& opt){
     return r;
 }
 
-}  // namespace ggufc
-#endif  // GGUF_CONVERT_H
+}
+#endif

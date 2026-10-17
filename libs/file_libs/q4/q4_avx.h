@@ -1,9 +1,9 @@
-#ifndef Q4_AVX_H
+﻿#ifndef Q4_AVX_H
 #define Q4_AVX_H
-#include <cstdint>
-#include <cstring>
-#include <immintrin.h>
-#include "../../date_libs/wmat.h"
+#include<cstdint>
+#include<cstring>
+#include<immintrin.h>
+#include"../../date_libs/wmat.h"
 __attribute__((target("avx")))
 void q4_avx(const unsigned char* b,float* dst){
     auto hv=[](const unsigned char* p){ uint16_t v; std::memcpy(&v,p,2); return wmat::to_f32(v); };
@@ -39,4 +39,4 @@ void q4_avx(const unsigned char* b,float* dst){
         is+=2;
     }
 }
-#endif  // Q4_AVX_H
+#endif

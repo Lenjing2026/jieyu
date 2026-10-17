@@ -1,6 +1,6 @@
-#ifndef RMSNORM_CLASSIC_H
+﻿#ifndef RMSNORM_CLASSIC_H
 #define RMSNORM_CLASSIC_H
-#include <cmath>
+#include<cmath>
 void rmsnorm_classic(float* x,float* y,const float* weight,int n,float eps){
     float ss=0.0f;
     for(int i=0;i<n;i++)
@@ -15,4 +15,4 @@ void rmsnorm_classic(float* x,float* y,const float* weight,int n,float eps){
     for(int i=0;i<n;i++)
         y[i]=x[i]*scale*weight[i];
 }
-#endif  // RMSNORM_CLASSIC_H
+#endif

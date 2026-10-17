@@ -1,7 +1,7 @@
-#ifndef DATE_LIBS_WMAT_H
+﻿#ifndef DATE_LIBS_WMAT_H
 #define DATE_LIBS_WMAT_H
-#include <cstdint>
-#include <cstring>
+#include<cstdint>
+#include<cstring>
 
 namespace wmat {
 
@@ -27,11 +27,8 @@ inline void row_to_f32(const uint16_t* src,float* dst,int n){
     for(int i=0;i<n;i++) dst[i]=to_f32(src[i]);
 }
 
-}  // namespace wmat
+}
 
-// 一个权重矩阵：f32 / f16 / 块量化，三选一
-//   f / h：普通浮点，内存是 [k,n]（n 连续）
-//   q    ：块量化，内存是 [n,k]（k 连续，块沿 k），行号就是输出号；qt 是 qmat 的类型代号
 struct WMat{
     const float* f=nullptr;
     const uint16_t* h=nullptr;
@@ -46,4 +43,4 @@ struct WMat{
     bool is_quant() const{ return q!=nullptr; }
 };
 
-#endif  // DATE_LIBS_WMAT_H
+#endif

@@ -11,7 +11,7 @@ struct __consten_pool{
     path cp;
 };
 const __consten_pool consten_pool={
-    .version={"0.2.3",0,2,3},
+    .version={"0.2.4",0,2,4},
     .downloand_mj="https://github.com/Lenjing2026/Jieyu_modle_downlond/releases/download/download_json/download.json",
     .cp=filesystem::current_path()
 };

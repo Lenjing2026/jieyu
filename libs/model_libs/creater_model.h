@@ -1,4 +1,4 @@
-#ifndef creater_model_h
+﻿#ifndef creater_model_h
 #define creater_model_h
 #include<filesystem>
 #include<string>
@@ -6,15 +6,15 @@
 #include<iostream>
 #include"bfile.h"
 #include"../libs.h"
-#include"../mapp_libs/Windows_InMapp.h"
+#include"../mapp_libs/InMapp.h"
 using namespace std;
 using namespace std::filesystem;
 using namespace json_libs;
 bool create_model(path temp_path){
     return create_directories(temp_path);
 }
-void create_bfile(path temp_path) {
-    path model_info_json = temp_path / "model_info.json";
+void create_bfile(path temp_path){
+    path model_info_json=temp_path / "model_info.json";
     if(!exists(model_info_json)) throw "NO_JSONFILE";
     json_lib jtemp;
     jtemp.SetJsonWay(model_info_json.string());
@@ -30,4 +30,4 @@ void create_bfile(path temp_path) {
     head.vocab_size=jtemp.GetJsonInt("vocab_size");
     bfile::write_bfile((temp_path / "model.bf").string(),head,{});
 }
-#endif  // creater_model_h
+#endif
