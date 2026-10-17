@@ -1,6 +1,7 @@
 #ifndef GGUF_CONVERT_H
 #define GGUF_CONVERT_H
 #include<algorithm>
+#include<cstdio>
 #include<filesystem>
 #include<fstream>
 #include<iostream>
@@ -254,8 +255,9 @@ inline void write_tokenizer(const gguf::File& g,const string& out_dir,Result& r,
             for(size_t i=0;i<mg->strs.size();i++) m<<mg->strs[i]<<"\n";
     }
     if(verbose)
-        cout<<"  词表 "<<tk->strs.size()<<" 个 token，合并规则 "
-            <<(mg==nullptr?0:mg->strs.size())<<" 条，eos="<<r.eos_id<<"\n";
+        printf("  词表 %llu 个 token，合并规则 %llu 条，eos=%d\n",
+               (unsigned long long)tk->strs.size(),
+               (unsigned long long)(mg==nullptr?0:mg->strs.size()),r.eos_id);
 }
 
 inline Result convert(const Options& opt){
@@ -265,7 +267,7 @@ inline Result convert(const Options& opt){
     r.arch=(am!=nullptr&&!am->s.empty())?am->s:string("llama");
     const string pre=r.arch+".";
     if(opt.verbose)
-        cout<<"GGUF v"<<g.version<<"  "<<r.arch<<"  张量 "<<g.tensors.size()<<"\n";
+        printf("GGUF v%u  %s  张量 %llu\n",(unsigned)g.version,r.arch.c_str(),(unsigned long long)g.tensors.size());
 
     long long hidden=meta_int(g,pre+"embedding_length",0);
     long long nl=meta_int(g,pre+"block_count",0);
@@ -302,7 +304,7 @@ inline Result convert(const Options& opt){
     if(nh>255||nkv>255||hd>255) throw runtime_error("gguf: num_heads / num_kv_heads / head_dim 必须落在 1..255");
     if(nh%nkv!=0) throw runtime_error("gguf: num_heads 必须能被 num_kv_heads 整除");
     if(hidden!=nh*hd)
-        cout<<"[警告] hidden("<<hidden<<") != num_heads*head_dim("<<nh*hd<<")\n";
+        printf("[警告] hidden(%lld) != num_heads*head_dim(%lld)\n",hidden,nh*hd);
 
     for(size_t i=0;i<g.tensors.size();i++){
         const gguf::Tensor& t=g.tensors[i];
@@ -340,10 +342,10 @@ inline Result convert(const Options& opt){
         }
     }
     if(skipped.size()!=0&&opt.verbose){
-        cout<<"  跳过 "<<skipped.size()<<" 个不认识的张量：";
-        for(size_t i=0;i<skipped.size()&&i<6;i++) cout<<skipped[i]<<" ";
-        if(skipped.size()>6) cout<<"...";
-        cout<<"\n";
+        printf("  跳过 %llu 个不认识的张量：",(unsigned long long)skipped.size());
+        for(size_t i=0;i<skipped.size()&&i<6;i++) printf("%s ",skipped[i].c_str());
+        if(skipped.size()>6) printf("...");
+        printf("\n");
     }
 
     r.head.hidden=(uint64_t)hidden;
@@ -359,13 +361,15 @@ inline Result convert(const Options& opt){
 
     fs::create_directories(opt.out_dir);
     const string bf=(fs::path(opt.out_dir)/"model.bf").string();
-    if(opt.verbose)
-        cout<<"  写 model.bf（"<<sinks.size()<<" 个张量，其中 "<<r.transposed<<" 个转置、"
-            <<r.permuted<<" 个 q/k 置换、"<<r.quant<<" 个原样搬量化块）..."<<flush;
+    if(opt.verbose){
+        printf("  写 model.bf（%llu 个张量，其中 %d 个转置、%d 个 q/k 置换、%d 个原样搬量化块）...",
+               (unsigned long long)sinks.size(),r.transposed,r.permuted,r.quant);
+        fflush(stdout);
+    }
     bfile::write_bfile_stream(bf,r.head,sinks);
     r.tensor_count=sinks.size();
     r.file_size=fs::file_size(bf);
-    if(opt.verbose) cout<<"完成\n";
+    if(opt.verbose) printf("完成\n");
 
     {
         json_libs::json_lib info;

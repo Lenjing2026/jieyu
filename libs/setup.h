@@ -25,8 +25,6 @@ bool write_language_file(const string& name){
     }
     return true;
 }
-bool chinese_json(){ return write_language_file("zh_cn.json"); }
-
 bool create_config_file(){
     json_lib config;
     config.SetJsonWay(config_path());

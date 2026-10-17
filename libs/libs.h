@@ -34,7 +34,7 @@
 //  前向 / 生成
 //      libs/model_libs/silu|rmsnorm|rope|attention|ffn
 //      libs/model_libs/transformer_layer.h / forward.h / final_norm.h / lm_head.h
-//      libs/model_libs/sampler.h / generate.h
+//      libs/model_libs/generate.h
 //
 //  GGUF
 //      libs/gguf_libs/gguf.h               读 GGUF v2/v3 + 反量化（q4_K / q5_K / q6_K ...）
@@ -105,7 +105,6 @@
 #include "model_libs/forward.h"
 #include "model_libs/final_norm.h"
 #include "model_libs/lm_head.h"
-#include "model_libs/sampler.h"
 #include "model_libs/generate.h"
 #include "model_libs/pipeline.h"
 

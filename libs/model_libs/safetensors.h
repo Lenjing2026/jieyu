@@ -141,21 +141,6 @@ inline void to_f32(const unsigned char* src, uint64_t count, uint8_t dtype, floa
     }
 }
 
-// 读一段原始字节
-inline void read_range(const std::string& path, uint64_t begin, uint64_t nbytes,
-                       std::vector<unsigned char>& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("safetensors: 打不开 " + path);
-    f.seekg(static_cast<std::streamoff>(begin), std::ios::beg);
-    out.resize(static_cast<size_t>(nbytes));
-    if (nbytes > 0) {
-        f.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(nbytes));
-        if (static_cast<uint64_t>(f.gcount()) != nbytes) {
-            throw std::runtime_error("safetensors: 数据被截断 " + path);
-        }
-    }
-}
-
 inline void open(const std::string& path, File& out) {
     out = File();
     out.path = path;

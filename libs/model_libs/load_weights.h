@@ -27,10 +27,6 @@ inline const bfile::Entry* find_tensor(const std::string& name) {
     return bfile::current().find(name.c_str());
 }
 
-inline bool has_tensor(const std::string& name) {
-    return find_tensor(name) != nullptr;
-}
-
 inline const float* tensor_f32(const std::string& name) {
     const bfile::Entry* e = find_tensor(name);
     if (e == nullptr || e->dtype != bfile::F32) return nullptr;

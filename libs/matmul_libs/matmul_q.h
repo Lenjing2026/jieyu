@@ -43,12 +43,6 @@ inline size_t block_bytes(uint8_t t) {
     }
 }
 
-inline size_t row_bytes(uint8_t t, int width) {
-    const size_t be = block_elems(t);
-    if (width <= 0 || (size_t)width % be != 0) throw std::runtime_error("qmat: 行长不是量化块的整数倍");
-    return (size_t)width / be * block_bytes(t);
-}
-
 inline void dequant_block(uint8_t t, const void* src, float* dst) {
     const unsigned char* b = static_cast<const unsigned char*>(src);
     switch (t) {

@@ -13,6 +13,7 @@
 #endif
 
 #include <chrono>
+#include <cstdio>
 #include <iostream>
 #include <ostream>
 #include <string>
@@ -216,7 +217,7 @@ inline size_t marker_at(const std::string& s, const std::string* stops, int nsto
 struct EchoSink {
     const json_libs::Tokenizer* tok;
     std::string* out;
-    std::ostream* echo;
+    FILE* echo;
     std::string pending;
     int32_t sp[3];
     int nsp;
@@ -248,7 +249,8 @@ inline bool echo_token(int id, void* ud) {
     if (s->echo == nullptr) return false;
     const size_t cut = utf8_flushable(s->pending, hold_back(s->pending));
     if (cut > 0) {
-        *s->echo << s->pending.substr(0, cut) << std::flush;
+        fwrite(s->pending.data(), 1, cut, s->echo);
+        fflush(s->echo);
         s->pending.erase(0, cut);
     }
     return false;
@@ -256,7 +258,7 @@ inline bool echo_token(int id, void* ud) {
 
 inline int generate_text(const json_libs::Tokenizer& tok, const std::string& prompt, const ModelRefs& m,
                          int max_new, float temperature, std::string& out,
-                         bool add_bos = true, std::ostream* echo = nullptr,
+                         bool add_bos = true, FILE* echo = nullptr,
                          float repetition_penalty = 1.0f, bool show_speed = false) {
     std::vector<int32_t> ids = tok.encode(prompt);
     const int32_t bos = tok.bos_id();
@@ -269,8 +271,7 @@ inline int generate_text(const json_libs::Tokenizer& tok, const std::string& pro
     for (int32_t id : ids) {
         if (id < 0 || id >= m.vocab_size) {
             if (echo != nullptr) {
-                *echo << "[pipeline] token id " << id << " 超出词表 " << m.vocab_size
-                      << "（词表与模型不匹配）" << std::endl;
+                fprintf(echo,"[pipeline] token id %d 超出词表 %d（词表与模型不匹配）\n",(int)id,m.vocab_size);
             }
             return -1;
         }
@@ -329,8 +330,9 @@ inline int generate_text(const json_libs::Tokenizer& tok, const std::string& pro
             const size_t pm = marker_at(sink.pending, stops, nstop);
             if (pm != std::string::npos) sink.pending.erase(pm);
         }
-        if (!sink.pending.empty()) *echo << sink.pending;
-        *echo << std::endl;
+        if (!sink.pending.empty()) fputs(sink.pending.c_str(), echo);
+        fputc('\n', echo);
+        fflush(echo);
     }
     if (show_speed && sink.ntok > 0) {
         const std::chrono::steady_clock::time_point t_end = std::chrono::steady_clock::now();
@@ -340,15 +342,14 @@ inline int generate_text(const json_libs::Tokenizer& tok, const std::string& pro
         const int dec_n = sink.ntok - 1;
         const double pre_v = (prompt_len > 0 && pre_s > 0.0) ? prompt_len / pre_s : 0.0;
         const double dec_v = (dec_n > 0 && dec_s > 0.0) ? dec_n / dec_s : 0.0;
-        std::cout << "[速度] 预填充 " << prompt_len << " token，" << pre_s << " 秒（" << pre_v
-                  << " token/秒）\n";
+        printf("[速度] 预填充 %d token，%g 秒（%g token/秒）\n",prompt_len,pre_s,pre_v);
         if (dec_n > 0) {
-            std::cout << "       解码   " << dec_n << " token，" << dec_s << " 秒（" << dec_v
-                      << " token/秒，" << (dec_v > 0.0 ? 1000.0 / dec_v : 0.0) << " 毫秒/token）\n";
+            printf("       解码   %d token，%g 秒（%g token/秒，%g 毫秒/token）\n",
+                   dec_n,dec_s,dec_v,dec_v>0.0?1000.0/dec_v:0.0);
         } else {
-            std::cout << "       解码   0 token（这次没进解码阶段）\n";
+            printf("       解码   0 token（这次没进解码阶段）\n");
         }
-        std::cout << "       总用时 " << total << " 秒" << std::endl;
+        printf("       总用时 %g 秒\n",total);
     }
     return len - prompt_len;
 }
@@ -390,9 +391,8 @@ inline bool load_model_dir(LoadedModel& out, const std::string& dir, int max_seq
         return fail("分词器加载失败: " + vocab + " / " + merges);
     }
     if (static_cast<int>(out.tokenizer.vocab_size()) > out.refs.vocab_size) {
-        std::cerr << "[pipeline] 警告：词表有 " << out.tokenizer.vocab_size()
-                  << " 个 token，而模型只有 " << out.refs.vocab_size
-                  << " 行 embedding，超出的会报错" << std::endl;
+        fprintf(stderr, "[pipeline] 警告：词表有 %llu 个 token，而模型只有 %d 行 embedding，超出的会报错\n",
+                (unsigned long long)out.tokenizer.vocab_size(), out.refs.vocab_size);
     }
     const std::string info = model.model_info.string();
     out.s_start = read_info_str(info, "message_start", "");
@@ -482,36 +482,37 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
     std::string sys_turn = templated ? (p_start + "system\n" + sys + p_end + "\n") : std::string();
     if (ds) sys_turn = m.s_bos + sys;
 
-    std::cout << "模型已装载：" << m.dir << "\n";
-    std::cout << "  hidden=" << m.refs.hidden << " layers=" << m.refs.num_layers
-              << " heads=" << m.refs.num_heads << " kv=" << m.refs.num_kv_heads
-              << " head_dim=" << m.refs.head_dim << " vocab=" << m.refs.vocab_size << "\n";
-    std::cout << "  词表 " << m.tokenizer.vocab_size() << " 个 token，最大长度 "
-              << m.refs.max_seq;
+    printf("模型已装载：%s\n",m.dir.c_str());
+    printf("  hidden=%d layers=%d heads=%d kv=%d head_dim=%d vocab=%d\n",
+           m.refs.hidden,m.refs.num_layers,m.refs.num_heads,m.refs.num_kv_heads,
+           m.refs.head_dim,m.refs.vocab_size);
+    printf("  词表 %llu 个 token，最大长度 %d",
+           (unsigned long long)m.tokenizer.vocab_size(),m.refs.max_seq);
     if (max_new > 0) {
-        std::cout << "，每次最多生成 " << max_new << " 个 token";
+        printf("，每次最多生成 %d 个 token",max_new);
     } else {
-        std::cout << "，不限（生成到 <|im_end|> / 上下文满为止）";
+        printf("，不限（生成到 <|im_end|> / 上下文满为止）");
     }
-    std::cout << "\n";
-    std::cout << "  对话模板 " << (templated ? "开（<|im_start|>…<|im_end|>）"
-                                            : ds ? "开（<｜User｜>…<｜Assistant｜>，DeepSeek 风格）"
-                                                 : "关（纯续写）");
+    printf("\n");
+    printf("  对话模板 %s",templated ? "开（<|im_start|>…<|im_end|>）"
+                                    : ds ? "开（<｜User｜>…<｜Assistant｜>，DeepSeek 风格）"
+                                         : "关（纯续写）");
     if (looks_base) {
-        std::cout << "\n  [注意] 这看着是 base 模型"
-                  << (m.s_name.empty() ? std::string() : ("（" + m.s_name + "）"))
-                  << "，它不会对话，只会续写文档 —— 想聊天请用 instruct 版的目录";
+        printf("\n  [注意] 这看着是 base 模型%s，它不会对话，只会续写文档 —— 想聊天请用 instruct 版的目录",
+               (m.s_name.empty() ? std::string() : ("（" + m.s_name + "）")).c_str());
     }
     if (model.s_token.text_end != 0) {
-        std::cout << "，碰到 text_end(" << model.s_token.text_end << ") / message_end("
-                  << model.s_token.meesage_end << ") 会停";
+        printf("，碰到 text_end(%llu) / message_end(%llu) 会停",
+               (unsigned long long)model.s_token.text_end,(unsigned long long)model.s_token.meesage_end);
     }
-    std::cout << "\n输入提示词回车生成，输入 :q 退出\n" << std::flush;
+    printf("\n输入提示词回车生成，输入 :q 退出\n");
+    fflush(stdout);
 
     std::vector<std::string> turns;
     std::string line;
     while (true) {
-        std::cout << "\n> " << std::flush;
+        printf("\n> ");
+        fflush(stdout);
         if (!std::getline(std::cin, line)) break;
         std::string prompt = acp_to_utf8(line);
         while (!prompt.empty() && (prompt.back() == '\r' || prompt.back() == '\n')) {
@@ -526,14 +527,14 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
         for (const std::string& t : turns) feed += t;
         feed += turn;
         if (templated) feed += p_start + "assistant\n";
-        std::cout << "  [给模型看 " << m.tokenizer.encode(feed).size() << " token，历史 "
-                  << turns.size() << " 轮]" << std::endl;
+        printf("  [给模型看 %llu token，历史 %llu 轮]\n",
+               (unsigned long long)m.tokenizer.encode(feed).size(),(unsigned long long)turns.size());
         std::string out;
         const int produced = generate_text(m.tokenizer, feed, m.refs, max_new, temperature,
-                                           out, m.refs.add_bos, &std::cout, repetition_penalty,
+                                           out, m.refs.add_bos, stdout, repetition_penalty,
                                            show_speed);
         if (produced < 0) {
-            std::cout << "(生成失败)" << std::endl;
+            printf("(生成失败)\n");
             continue;
         }
         if (templated && produced > 0) {
@@ -545,7 +546,7 @@ inline int run_chat(LoadedModel& m, int max_new, float temperature, float repeti
             while (turns.size() > 8) turns.erase(turns.begin());
         }
     }
-    std::cout << std::endl;
+    printf("\n");
     return 0;
 }
 
@@ -553,10 +554,10 @@ inline int run_once(LoadedModel& m, const std::string& prompt, int max_new, floa
                     float repetition_penalty = 1.1f, bool show_speed = false) {
     std::string out;
     const int produced = generate_text(m.tokenizer, prompt, m.refs, max_new, temperature,
-                                       out, m.refs.add_bos, &std::cout, repetition_penalty,
+                                       out, m.refs.add_bos, stdout, repetition_penalty,
                                        show_speed);
     if (produced <= 0) {
-        std::cout << "(没有生成任何 token)" << std::endl;
+        printf("(没有生成任何 token)\n");
         return produced;
     }
     return 0;

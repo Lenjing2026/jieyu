@@ -319,16 +319,6 @@ inline void tokenizer_way(const std::string& directory_path) {
     tokenizer_way(directory + "vocab.json", directory + "merges.txt");
 }
 
-// 查询当前规定的词表路径（未规定时为空串）
-inline const std::string& tokenizer_vocab_path() {
-    return detail::configured_vocab_path();
-}
-
-// 查询当前规定的合并规则路径（未规定时为空串）
-inline const std::string& tokenizer_merges_path() {
-    return detail::configured_merges_path();
-}
-
 // ============================================================
 //  Tokenizer
 // ============================================================

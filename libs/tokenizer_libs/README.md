@@ -129,8 +129,6 @@ public:
 | ----------------------- | ----------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------- |
 | `tokenizer_way`         | `const std::string& directory_path` 数据目录                      | `void`               | 规定目录，自动拼成`<dir>/vocab.json` 与 `<dir>/merges.txt`；传空串表示清空 |
 | `tokenizer_way`         | `const std::string& vocab_path`、`const std::string& merges_path` | `void`               | 显式规定两个文件                                                           |
-| `tokenizer_vocab_path`  | —                                                                | `const std::string&` | 查询已规定的词表路径                                                       |
-| `tokenizer_merges_path` | —                                                                | `const std::string&` | 查询已规定的合并规则路径                                                   |
 
 **相对路径规则**：路径允许写成相对形式，查找顺序为
 `原样` → `../` → `../../` → `../../../`，因此无论从仓库根目录、`build/` 还是

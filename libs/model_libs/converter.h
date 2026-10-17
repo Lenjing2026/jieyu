@@ -258,8 +258,7 @@ inline void derive_head(const std::vector<safetensors::Info>& list, const json_l
         throw std::runtime_error("converter: num_heads 必须能被 num_kv_heads 整除");
     }
     if (hidden != nh * hd) {
-        std::cout << "[警告] hidden_size(" << hidden << ") != num_heads*head_dim("
-                  << nh * hd << ")，本工程的 attention 是按这个假设写的\n";
+        printf("[警告] hidden_size(%d) != num_heads*head_dim(%d)，本工程的 attention 是按这个假设写的\n",hidden,nh*hd);
     }
 
     head.hidden = static_cast<uint64_t>(hidden);
@@ -312,7 +311,7 @@ inline Result convert(const Options& opt) {
     json_libs::json_lib cfg;
     if (!opt.config_path.empty()) {
         if (!cfg.SetJsonWay(opt.config_path)) {
-            std::cout << "[警告] config.json 读不了（" << cfg.LastError() << "），改按张量形状推超参\n";
+            printf("[警告] config.json 读不了（%s），改按张量形状推超参\n",cfg.LastError().c_str());
         }
     }
 
@@ -400,35 +399,31 @@ inline Result convert(const Options& opt) {
     }
 
     if (opt.verbose) {
-        std::cout << "已写出 " << bf_path << "\n";
-        std::cout << "  源文件            " << opt.sources.size() << " 个，共 "
-                  << (static_cast<double>(source_bytes) / 1048576.0) << " MB\n";
-        std::cout << "  张量              " << result.tensor_count << " 个（其中 "
-                  << result.transposed << " 个 2D 权重转置）\n";
-        std::cout << "  数据区起点        " << result.data_off << " 字节\n";
-        std::cout << "  文件大小          " << (static_cast<double>(result.file_size) / 1048576.0) << " MB\n";
-        std::cout << "  超参              hidden=" << result.head.hidden
-                  << " layers=" << result.head.layers
-                  << " heads=" << static_cast<int>(result.head.num_heads)
-                  << " kv=" << static_cast<int>(result.head.num_kv_heads)
-                  << " head_dim=" << static_cast<int>(result.head.head_dim)
-                  << " inter=" << result.head.intermediate
-                  << " vocab=" << result.head.vocab_size << "\n";
-        std::cout << "  rope_theta        " << result.rope_theta << "\n";
-        std::cout << "  输出 dtype        " << bfile::dtype_name(opt.out_dtype) << "\n";
+        printf("已写出 %s\n",bf_path.c_str());
+        printf("  源文件            %llu 个，共 %g MB\n",
+               (unsigned long long)opt.sources.size(),static_cast<double>(source_bytes)/1048576.0);
+        printf("  张量              %llu 个（其中 %d 个 2D 权重转置）\n",
+               (unsigned long long)result.tensor_count,result.transposed);
+        printf("  数据区起点        %llu 字节\n",(unsigned long long)result.data_off);
+        printf("  文件大小          %g MB\n",static_cast<double>(result.file_size)/1048576.0);
+        printf("  超参              hidden=%llu layers=%llu heads=%d kv=%d head_dim=%d inter=%u vocab=%llu\n",
+               (unsigned long long)result.head.hidden,(unsigned long long)result.head.layers,
+               (int)result.head.num_heads,(int)result.head.num_kv_heads,(int)result.head.head_dim,
+               (unsigned)result.head.intermediate,(unsigned long long)result.head.vocab_size);
+        printf("  rope_theta        %d\n",result.rope_theta);
+        printf("  输出 dtype        %s\n",bfile::dtype_name(opt.out_dtype));
         if (result.tied_lm_head) {
-            std::cout << "  权重共享          没有 lm_head.weight，已补一份转置副本\n";
+            printf("  权重共享          没有 lm_head.weight，已补一份转置副本\n");
         }
         if (!copied.empty()) {
-            std::cout << "  已复制分词器文件  ";
+            printf("  已复制分词器文件  ");
             for (size_t i = 0; i < copied.size(); i++) {
-                std::cout << (i ? ", " : "") << copied[i];
+                printf("%s%s",(i ? ", " : ""),copied[i].c_str());
             }
-            std::cout << "\n";
+            printf("\n");
         }
         if (opt.out_dtype != bfile::F32) {
-            std::cout << "  [注意] 当前引擎只读 f32，"
-                      << bfile::dtype_name(opt.out_dtype) << " 还得等 matmul 支持\n";
+            printf("  [注意] 当前引擎只读 f32，%s 还得等 matmul 支持\n",bfile::dtype_name(opt.out_dtype));
         }
     }
     return result;

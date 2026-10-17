@@ -262,17 +262,6 @@ inline Tensor make_f32(const std::string& name, const std::vector<uint32_t>& sha
     return t;
 }
 
-inline Tensor make_i32(const std::string& name, const std::vector<uint32_t>& shape,
-                       const std::vector<int32_t>& v) {
-    Tensor t;
-    t.name = name;
-    t.dtype = I32;
-    t.shape = shape;
-    t.data.resize(v.size() * sizeof(int32_t));
-    std::memcpy(t.data.data(), v.data(), t.data.size());
-    return t;
-}
-
 // 把 f32 按 [rows, cols] 转置成 [cols, rows]（HF 的 nn.Linear 权重 -> 本工程布局）
 inline std::vector<float> transpose(const std::vector<float>& src, int rows, int cols) {
     std::vector<float> dst(static_cast<size_t>(rows) * cols);

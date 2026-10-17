@@ -23,28 +23,8 @@ inline float to_f32(uint16_t h){
     return v;
 }
 
-inline uint16_t to_f16(float v){
-    uint32_t bits;
-    std::memcpy(&bits,&v,4);
-    const uint32_t s=(bits>>16)&0x8000u;
-    const int32_t e=(int32_t)((bits>>23)&0xFFu)-127+15;
-    const uint32_t m=bits&0x7FFFFFu;
-    if(((bits>>23)&0xFFu)==0xFFu) return (uint16_t)(s|0x7C00u|(m?0x200u:0));
-    if(e>=31) return (uint16_t)(s|0x7C00u);
-    if(e<=0){
-        if(e<-10) return (uint16_t)s;
-        const uint32_t mm=(m|0x800000u)>>(uint32_t)(1-e);
-        return (uint16_t)(s|(mm>>13));
-    }
-    return (uint16_t)(s|((uint32_t)e<<10)|(m>>13));
-}
-
 inline void row_to_f32(const uint16_t* src,float* dst,int n){
     for(int i=0;i<n;i++) dst[i]=to_f32(src[i]);
-}
-
-inline void f32_row_to_f16(const float* src,uint16_t* dst,int n){
-    for(int i=0;i<n;i++) dst[i]=to_f16(src[i]);
 }
 
 }  // namespace wmat
