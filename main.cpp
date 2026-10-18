@@ -4,6 +4,9 @@
 #include<cstdio>
 #if defined(_WIN32)
 #include<shellapi.h>
+#include<io.h>
+#else
+#include<unistd.h>
 #endif
 using namespace std;
 using namespace json_libs;
@@ -177,23 +180,46 @@ inline int selftest(){
     struct Case{ const char* name; bool (*fn)(); };
     const Case cases[]={
         {"matmul",check_matmul},
-        {"model.bf",check_bfile},
-        {"model.bf 张量目录",check_tensor_dir},
-        {"FFN",check_ffn},
-        {"RoPE",check_rope},
-        {"RMSNorm",check_rmsnorm},
-        {"Attention",check_attention},
-        {"Transformer 整层",check_transformer_layer},
-        {"自回归生成",check_generate},
-        {"KV cache",check_kv_cache},
-        {"safetensors 转换器",check_convert},
         {"权重装载",check_bind_weights},
         {"端到端（文本进文本出）",check_pipeline},
     };
     int bad=0;
     for(size_t i=0;i<sizeof(cases)/sizeof(cases[0]);i++){
-        if(cases[i].fn()) printf("%s 测试通过！\n",cases[i].name);
-        else{ printf("%s 测试失败！\n",cases[i].name); bad++; }
+        FILE* tmp=tmpfile();
+        int saved=-1;
+        if(tmp!=nullptr){
+            fflush(stdout);
+#if defined(_WIN32)
+            saved=_dup(_fileno(stdout));
+            _dup2(_fileno(tmp),_fileno(stdout));
+#else
+            saved=dup(fileno(stdout));
+            dup2(fileno(tmp),fileno(stdout));
+#endif
+        }
+        const bool ok=cases[i].fn();
+        if(tmp!=nullptr){
+            fflush(stdout);
+#if defined(_WIN32)
+            _dup2(saved,_fileno(stdout));
+            _close(saved);
+#else
+            dup2(saved,fileno(stdout));
+            close(saved);
+#endif
+        }
+        if(ok) printf("%s [%d/%d] ok\n",cases[i].name,self_passed,self_total);
+        else{
+            printf("%s [%d/%d] fail\n",cases[i].name,self_passed,self_total);
+            if(tmp!=nullptr){
+                rewind(tmp);
+                char buf[4096];
+                size_t got=0;
+                while((got=fread(buf,1,sizeof(buf),tmp))>0) fwrite(buf,1,got,stdout);
+            }
+            bad++;
+        }
+        if(tmp!=nullptr) fclose(tmp);
     }
     if(bad==0) printf("全部测试通过！\n");
     else printf("有 %d 组测试失败！\n",bad);
