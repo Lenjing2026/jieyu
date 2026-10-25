@@ -94,3 +94,101 @@ endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
     target_link_libraries(jieyu PRIVATE stdc++fs)
 endif()
+
+# ------------------------------------------------------------
+#  动态库（对外 C 接口，声明见 main.hpp）
+#    main.hpp 直接当源文件编（CMake 里给它 LANGUAGE CXX，等价于 -x c++）
+#    cmake --build build --target jieyu_shared
+#  Windows/MinGW：jieyu.dll + libjieyu.dll.a
+#  Linux：libjieyu.so
+#  导出符号：jieyu_load / jieyu_free / jieyu_generate / jieyu_generate_jsonl
+#            / jieyu_last_error / jieyu_version
+# ------------------------------------------------------------
+set_source_files_properties(main.hpp PROPERTIES LANGUAGE CXX)
+if(MSVC)
+    set_source_files_properties(main.hpp PROPERTIES COMPILE_OPTIONS "/TP")
+else()
+    set_source_files_properties(main.hpp PROPERTIES COMPILE_OPTIONS "-x;c++")
+endif()
+add_library(jieyu_shared SHARED main.hpp)
+target_link_libraries(jieyu_shared PRIVATE
+    jieyu_headers
+    json_libs
+    tokenizer_headers
+)
+target_compile_definitions(jieyu_shared PRIVATE MAIN_EXPORTS)
+
+if(MSVC)
+    target_compile_options(jieyu_shared PRIVATE /utf-8 /W4 /openmp)
+else()
+    target_compile_options(jieyu_shared PRIVATE -Wall -Wextra -fopenmp -fvisibility=hidden)
+    target_link_options(jieyu_shared PRIVATE -fopenmp)
+    if(NOT JIEYU_NO_O3)
+        target_compile_options(jieyu_shared PRIVATE -O3 -DNDEBUG)
+    endif()
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+    target_link_libraries(jieyu_shared PRIVATE stdc++fs)
+endif()
+
+set_target_properties(jieyu_shared PROPERTIES
+    OUTPUT_NAME "jieyu"
+    PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+# ------------------------------------------------------------
+#  交叉编译 Linux 版（Zig + musl，静态链接，Windows 上也能直接出 ELF）
+#    cmake --build build --target jieyu_linux          可执行
+#    cmake --build build --target jieyu_linux_so       动态库
+#  Zig 不在 PATH 里时：-DZIG_EXECUTABLE=D:/path/to/zig.exe
+#  产物：工程根目录 jieyu（静态 ELF）与 jieyu.so（C 接口动态库）
+# ------------------------------------------------------------
+if(NOT ZIG_EXECUTABLE)
+    find_program(ZIG_EXECUTABLE NAMES zig
+        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/Trush/zig")
+endif()
+if(ZIG_EXECUTABLE)
+    add_custom_target(jieyu_linux ALL
+        COMMAND "${ZIG_EXECUTABLE}" c++
+                -target x86_64-linux-musl
+                -O3 -DNDEBUG -s
+                -std=c++17 -pthread
+                -I${CMAKE_CURRENT_SOURCE_DIR}
+                -I${CMAKE_CURRENT_SOURCE_DIR}/libs
+                ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/jieyu
+        COMMENT "交叉编译 jieyu（x86_64-linux-musl，静态，std::thread 线程池）"
+        VERBATIM)
+
+    add_custom_target(jieyu_linux_so ALL
+        COMMAND "${ZIG_EXECUTABLE}" c++
+                -target x86_64-linux-musl
+                -O3 -DNDEBUG -s
+                -std=c++17 -pthread -fPIC -shared
+                -fvisibility=hidden
+                -DMAIN_EXPORTS
+                -I${CMAKE_CURRENT_SOURCE_DIR}
+                -I${CMAKE_CURRENT_SOURCE_DIR}/libs
+                -x c++ ${CMAKE_CURRENT_SOURCE_DIR}/main.hpp
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/jieyu.so
+        COMMENT "交叉编译 jieyu.so（x86_64-linux-musl，C 接口）"
+        VERBATIM)
+else()
+    message(STATUS "没找到 Zig：目标 jieyu_linux / jieyu_linux_so 不可用（把 zig.exe 放到 Trush/zig 或传 -DZIG_EXECUTABLE=...）")
+endif()

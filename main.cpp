@@ -21,13 +21,19 @@ inline void usage(){
            "  jieyu -langrage [名字|{json}]                  切语言（写进 config.json），不带参数就看当前和可用语言\n"
            "  jieyu -convert <safetensors...|xxx.gguf> -o <目录> [-config f] [-tokenizer d] [-dtype quant|f32|f16]\n"
            "  jieyu -chat <模型目录> [最多生成] [温度] [最大长度] [重复惩罚] [-tokenspeed]\n"
+           "  jieyu -jchat <模型> <data.jsonl> [-qb 提问前缀] [-qe 回答后缀] [-n 最多生成] [-t 温度] [-l 最大长度] [-p 重复惩罚] [-tokenspeed] [-noinfo]\n"
+           "        逐行读 data.jsonl（取 name / message 两个键）拼成提示词，再生成一次\n"
+           "        -qb/-qe 省略就用 model_info.json 里的 user_start（没则 message_start）与 message_end（没则 turn_end）\n"
+           "        -noinfo 不打印装载/模板信息，只留错误输出\n"
+           "        例：jieyu -jchat qwen-3B _file/qa.jsonl -n 256 -t 0.7\n"
+           "            jieyu -jchat qwen-3B _file/qa.jsonl -qb \"<|im_start|>user\\n\" -qe \"<|im_end|>\\n\"\n"
            "  jieyu -?                                       看这份用法\n"
            "    （[最多生成] 省了或给 0 就是不限，生成到 <|im_end|> / 上下文满为止）\n"
            "    （-tokenspeed 跟在 -run / -gen / -chat 后面：每次生成完分开打印预填充与解码两段速度，位置随便放）\n");
 }
 
 inline int read_json_int(const string& path,const string& key,int fallback){
-    json_lib j;
+    json_file j;
     if(!j.SetJsonWay(path)) return fallback;
     return j.GetJsonInt(key,fallback);
 }
@@ -144,12 +150,21 @@ inline int convert(vector<string> args){
     return 0;
 }
 
+inline bool g_noinfo=false;
+
+inline bool is_noinfo(const string& arg){
+    string a=arg;
+    while(!a.empty()&&(a[0]=='-'||a[0]=='/')) a.erase(0,1);
+    return a=="noinfo"||a=="quiet";
+}
+
 inline bool collect_pos(int argc,char** argv,int from,vector<string>& pos){
     bool show_speed=false;
     for(int i=from;i<argc;i++){
         string a=argv[i];
         while(!a.empty()&&(a[0]=='-'||a[0]=='/')) a.erase(0,1);
         if(a=="tokenspeed"||a=="speed"){ show_speed=true; continue; }
+        if(a=="noinfo"||a=="quiet"){ g_noinfo=true; continue; }
         pos.push_back(pipeline::acp_to_utf8(argv[i]));
     }
     return show_speed;
@@ -165,16 +180,60 @@ inline int run_model(const string& dir,const string& prompt,int max_new,float te
         printf("装载失败: %s\n",err.c_str());
         return 1;
     }
-    printf("模型   %s\n",dir.c_str());
+    if(!g_noinfo) printf("模型   %s\n",dir.c_str());
     const int code=chat?pipeline::run_chat(m,max_new,temperature,repetition_penalty,show_speed)
         :pipeline::run_once(m,prompt,max_new,temperature,repetition_penalty,show_speed);
     m.free();
     return code;
 }
 
+inline string unescape_arg(const string& s){
+    string out;
+    out.reserve(s.size());
+    for(size_t i=0;i<s.size();i++){
+        if(s[i]=='\\'&&i+1<s.size()){
+            const char c=s[++i];
+            if(c=='n') out.push_back('\n');
+            else if(c=='t') out.push_back('\t');
+            else if(c=='r') out.push_back('\r');
+            else out.push_back(c);
+        }else out.push_back(s[i]);
+    }
+    return out;
+}
+
+inline int run_jchat(const string& dir,const string& jsonl,const string& qb,const string& qe,
+                     int max_new,float temperature,float repetition_penalty,int max_seq_want,
+                     bool show_speed=false){
+    if(!exists(path(jsonl))){
+        printf("找不到 jsonl 文件: %s\n",jsonl.c_str());
+        return 1;
+    }
+    const string info=dir+"/model_info.json";
+    const string pre=qb.empty()?pipeline::read_info_str(info,"user_start",pipeline::read_info_str(info,"message_start",string())):qb;
+    const string suf=qe.empty()?pipeline::read_info_str(info,"message_end",pipeline::read_info_str(info,"turn_end",string())):qe;
+    if(!g_noinfo){
+        printf("模型   %s\n数据   %s\n前缀   [%s]\n后缀   [%s]\n",
+               dir.c_str(),jsonl.c_str(),pre.c_str(),suf.c_str());
+    }
+    pipeline::LoadedModel m;
+    string err;
+    const int want=read_json_int(info,"max_position_embeddings",1024);
+    int max_seq=(std::max)(64,(std::min)(want,4096));
+    if(max_seq_want>0) max_seq=(std::max)(8,max_seq_want);
+    if(!pipeline::load_model_dir(m,dir,max_seq,&err)){
+        printf("装载失败: %s\n",err.c_str());
+        return 1;
+    }
+    const bool ok=json_ochat(path(jsonl),pre,suf,m,max_new,temperature,repetition_penalty,stdout,show_speed);
+    m.free();
+    if(!ok) printf("(没有产出或生成失败)\n");
+    return ok?0:1;
+}
+
 inline int selftest(){
     setup_all();
-    printf("稍等，我们正在获取你的cpu信息\n");
+    printf("稍等,我们正在获取你的cpu信息\n");
     cpu_can.GetCpuCan();
     OutCPUInfo(cpu_can);
     struct Case{ const char* name; bool (*fn)(); };
@@ -235,11 +294,16 @@ inline int main_impl(int argc,char** argv){
     if(mode=="h"||mode=="help"||mode=="test"||mode=="text") return selftest();
     if(mode=="v") printf("%s",consten_pool.version.charv.c_str());
     if(mode=="run"){
-        if(argc<3) return list_models();
-        const string dir=find_model_dir(pipeline::acp_to_utf8(argv[2]));
-        if(dir.empty()){ printf("找不到模型 %s\n",argv[2]); return list_models(); }
+        int base=2;
+        while(base<argc&&is_noinfo(argv[base])){
+            g_noinfo=true;
+            base++;
+        }
+        if(base>=argc) return list_models();
+        const string dir=find_model_dir(pipeline::acp_to_utf8(argv[base]));
+        if(dir.empty()){ printf("找不到模型 %s\n",argv[base]); return list_models(); }
         vector<string> pos;
-        const bool show_speed=collect_pos(argc,argv,3,pos);
+        const bool show_speed=collect_pos(argc,argv,base+1,pos);
         int max_new=0,max_seq_want=0;
         float temperature=0.7f,rep_penalty=1.1f;
         if(pos.size()>0) max_new=(std::max)(0,std::atoi(pos[0].c_str()));
@@ -260,12 +324,17 @@ inline int main_impl(int argc,char** argv){
         return convert(rest);
     }
     if(mode=="chat"){
-        if(argc<3){ usage(); return 1; }
-        const string dir=pipeline::acp_to_utf8(argv[2]);
+        int base=2;
+        while(base<argc&&is_noinfo(argv[base])){
+            g_noinfo=true;
+            base++;
+        }
+        if(base>=argc){ usage(); return 1; }
+        const string dir=pipeline::acp_to_utf8(argv[base]);
         const string found=find_model_dir(dir);
         const bool chat=(mode=="chat");
         vector<string> pos;
-        const bool show_speed=collect_pos(argc,argv,3,pos);
+        const bool show_speed=collect_pos(argc,argv,base+1,pos);
         string prompt;
         int max_new=0,max_seq_want=0;
         float temperature=chat?0.7f:0.0f,rep_penalty=1.1f;
@@ -276,6 +345,45 @@ inline int main_impl(int argc,char** argv){
         if(pos.size()>next+2) max_seq_want=(std::max)(8,std::atoi(pos[next+2].c_str()));
         if(pos.size()>next+3) rep_penalty=(float)std::atof(pos[next+3].c_str());
         return run_model(found.empty()?dir:found,prompt,max_new,temperature,rep_penalty,chat,max_seq_want,show_speed);
+    }
+    if(mode=="jchat"){
+        int base=2;
+        while(base<argc&&is_noinfo(argv[base])){
+            g_noinfo=true;
+            base++;
+        }
+        if(argc<base+2){ usage(); return 1; }
+        const string name=pipeline::acp_to_utf8(argv[base]);
+        const string found=find_model_dir(name);
+        const string jsonl=pipeline::acp_to_utf8(argv[base+1]);
+        string qb,qe;
+        int max_new=256,max_seq_want=0;
+        float temperature=0.8f,rep_penalty=1.1f;
+        bool show_speed=false;
+        for(int i=base+2;i<argc;i++){
+            string key=argv[i];
+            while(!key.empty()&&(key[0]=='-'||key[0]=='/')) key.erase(0,1);
+            if(key=="qb"||key=="qe"||key=="n"||key=="t"||key=="l"||key=="p"){
+                if(i+1>=argc){ printf("参数 %s 缺少值\n",argv[i]); return 1; }
+                const string v=pipeline::acp_to_utf8(argv[++i]);
+                if(key=="qb") qb=unescape_arg(v);
+                else if(key=="qe") qe=unescape_arg(v);
+                else if(key=="n") max_new=(std::max)(0,std::atoi(v.c_str()));
+                else if(key=="t") temperature=(float)std::atof(v.c_str());
+                else if(key=="l") max_seq_want=(std::max)(8,std::atoi(v.c_str()));
+                else rep_penalty=(float)std::atof(v.c_str());
+                continue;
+            }
+            if(key=="tokenspeed"||key=="speed"){ show_speed=true; continue; }
+            if(key=="noinfo"||key=="quiet"){ g_noinfo=true; continue; }
+            printf("不认识的参数: %s\n",argv[i]);
+            return 1;
+        }
+        if(found.empty()){
+            printf("找不到模型 %s\n",name.c_str());
+            return list_models();
+        }
+        return run_jchat(found,jsonl,qb,qe,max_new,temperature,rep_penalty,max_seq_want,show_speed);
     }
     if(mode=="setup"){
         setup_all();
@@ -299,13 +407,13 @@ inline int main_impl(int argc,char** argv){
             create_directories(path("_file"));
             const string tmp="_file/.langrage_arg.json";
             { ofstream f(tmp,ios::binary|ios::trunc); f<<arg; }
-            json_libs::json_lib src;
+            json_libs::json_file src;
             if(!src.SetJsonWay(tmp)){
                 printf("这段 json 解析不了：%s\n%s\n（PowerShell 会把双引号吃掉，用 cmd 或写成文件再传）\n",arg.c_str(),src.LastError().c_str());
                 return 1;
             }
             src.ForEachKey([](const string& k,const string& v)->bool{
-                json_libs::json_lib c;
+                json_libs::json_file c;
                 c.SetJsonWay(config_path());
                 c.WriteJsonKey(k,v);
                 return true;
@@ -328,7 +436,7 @@ inline int main_impl(int argc,char** argv){
     }
     if(mode=="info"&&argc==3){
         const string name=pipeline::acp_to_utf8(argv[2]);
-        json_libs::json_lib temp;
+        json_libs::json_file temp;
         temp.SetJsonWay("models/"+name+"/model_info.json");
         if(!temp.IsLoaded()) temp.SetJsonWay("models/"+name+".json");
         printf("%s：%s\n",tr("model_writer","作者").c_str(),temp.GetJsonData("writer").c_str());

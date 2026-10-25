@@ -1,0 +1,16 @@
+[&]() __attribute__((target("avx"))){
+par_for(0,m,m>=4,[&](int64_t i0,int64_t i1) __attribute__((target("avx"))){
+    for(int64_t i=i0;i<i1;i++){
+        float* crow=C+(size_t)i*n;
+        const float* arow=A+(size_t)i*k;
+        for(int p=0;p<k;p++){
+            const __m256 va=_mm256_set1_ps(arow[p]);
+            const float* brow=B+(size_t)p*n;
+            int j=0;
+            for(;j+8<=n;j+=8)
+                _mm256_storeu_ps(crow+j,_mm256_add_ps(_mm256_loadu_ps(crow+j),_mm256_mul_ps(va,_mm256_loadu_ps(brow+j))));
+            for(;j<n;j++) crow[j]+=arow[p]*brow[j];
+        }
+    }
+});
+}();
