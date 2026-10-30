@@ -27,6 +27,8 @@ inline void usage(){
            "        -noinfo 不打印装载/模板信息，只留错误输出\n"
            "        例：jieyu -jchat qwen-3B _file/qa.jsonl -n 256 -t 0.7\n"
            "            jieyu -jchat qwen-3B _file/qa.jsonl -qb \"<|im_start|>user\\n\" -qe \"<|im_end|>\\n\"\n"
+           "  jieyu -once <模型> <提示词> [最多生成] [温度] [-tokenspeed] [-noinfo]\n"
+           "        单条提示词推理，生成结果直接打到 stdout（不做对话模板包装）\n"
            "  jieyu -?                                       看这份用法\n"
            "    （[最多生成] 省了或给 0 就是不限，生成到 <|im_end|> / 上下文满为止）\n"
            "    （-tokenspeed 跟在 -run / -gen / -chat 后面：每次生成完分开打印预填充与解码两段速度，位置随便放）\n");
@@ -181,8 +183,11 @@ inline int run_model(const string& dir,const string& prompt,int max_new,float te
         return 1;
     }
     if(!g_noinfo) printf("模型   %s\n",dir.c_str());
-    const int code=chat?pipeline::run_chat(m,max_new,temperature,repetition_penalty,show_speed)
-        :pipeline::run_once(m,prompt,max_new,temperature,repetition_penalty,show_speed);
+    m.refs.max_new=max_new;
+    m.refs.repetition_penalty=repetition_penalty;
+    m.refs.show_speed=show_speed;
+    const int code=chat?pipeline::run_chat(m,temperature)
+        :pipeline::run_once(m,prompt,temperature);
     m.free();
     return code;
 }
@@ -225,7 +230,10 @@ inline int run_jchat(const string& dir,const string& jsonl,const string& qb,cons
         printf("装载失败: %s\n",err.c_str());
         return 1;
     }
-    const bool ok=json_ochat(path(jsonl),pre,suf,m,max_new,temperature,repetition_penalty,stdout,show_speed);
+    m.refs.max_new=max_new;
+    m.refs.repetition_penalty=repetition_penalty;
+    m.refs.show_speed=show_speed;
+    const bool ok=json_ochat(path(jsonl),m,pre,suf,temperature,stdout);
     m.free();
     if(!ok) printf("(没有产出或生成失败)\n");
     return ok?0:1;
@@ -322,6 +330,41 @@ inline int main_impl(int argc,char** argv){
         vector<string> rest;
         for(int i=2;i<argc;i++) rest.push_back(pipeline::acp_to_utf8(argv[i]));
         return convert(rest);
+    }
+    if(mode=="once"){
+        int base=2;
+        while(base<argc&&is_noinfo(argv[base])){
+            g_noinfo=true;
+            base++;
+        }
+        if(argc<base+2){ usage(); return 1; }
+        const string name=pipeline::acp_to_utf8(argv[base]);
+        const string prompt=pipeline::acp_to_utf8(argv[base+1]);
+        const string found=find_model_dir(name);
+        if(found.empty()){
+            printf("找不到模型 %s\n",name.c_str());
+            return list_models();
+        }
+        vector<string> pos;
+        const bool show_speed=collect_pos(argc,argv,base+2,pos);
+        int max_new=64;
+        float temperature=0.0f;
+        if(pos.size()>0) max_new=(std::max)(0,std::atoi(pos[0].c_str()));
+        if(pos.size()>1) temperature=(float)std::atof(pos[1].c_str());
+        pipeline::LoadedModel m;
+        string err;
+        if(!pipeline::load_model_dir(m,found,1024,&err)){
+            printf("装载失败: %s\n",err.c_str());
+            return 1;
+        }
+        if(!g_noinfo) printf("模型   %s\n提示词 %s\n输出   ",found.c_str(),prompt.c_str());
+        m.refs.max_new=max_new;
+        m.refs.repetition_penalty=1.0f;
+        m.refs.show_speed=show_speed;
+        string out;
+        const int produced=m.generate(prompt,out,temperature,stdout);
+        m.free();
+        return produced>0?0:1;
     }
     if(mode=="chat"){
         int base=2;

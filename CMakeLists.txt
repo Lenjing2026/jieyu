@@ -27,6 +27,10 @@ endif()
 
 option(JIEYU_NO_O3 "不要强加 -O3" OFF)
 
+# 所有产物统一放到工程根目录的 resut/ 里
+set(JIEYU_OUT "${CMAKE_CURRENT_SOURCE_DIR}/resut")
+file(MAKE_DIRECTORY "${JIEYU_OUT}")
+
 # ------------------------------------------------------------
 # 头文件库
 # ------------------------------------------------------------
@@ -64,15 +68,25 @@ add_executable(jieyu main.cpp
     libs/model_libs/lm_head.h
     libs/model_libs/generate.h)
 
-# 让可执行文件直接产出到工程根目录，而不是藏在 build/ 里
+# 让可执行文件直接产出到 resut/，而不是藏在 build/ 里
 # （RUNTIME_OUTPUT_DIRECTORY 用于单配置生成器，带 _XXX 的用于 Visual Studio 这类多配置生成器）
 set_target_properties(jieyu PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${JIEYU_OUT}"
 )
+
+# 额外在工程根目录留一份 jieyu.exe（resut/ 里的保留，方便直接在根目录敲 ./jieyu）
+if(WIN32)
+    add_custom_command(TARGET jieyu POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:jieyu>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/jieyu.exe"
+        COMMENT "复制 jieyu.exe 到工程根目录"
+    )
+endif()
 
 target_link_libraries(jieyu PRIVATE
     jieyu_headers
@@ -135,21 +149,21 @@ endif()
 set_target_properties(jieyu_shared PROPERTIES
     OUTPUT_NAME "jieyu"
     PREFIX ""
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
-    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
-    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
-    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
-    ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
-    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
-    ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${JIEYU_OUT}"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${JIEYU_OUT}"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${JIEYU_OUT}"
+    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${JIEYU_OUT}"
+    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${JIEYU_OUT}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${JIEYU_OUT}"
+    ARCHIVE_OUTPUT_DIRECTORY "${JIEYU_OUT}"
+    ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${JIEYU_OUT}"
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${JIEYU_OUT}"
+    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${JIEYU_OUT}"
+    ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${JIEYU_OUT}"
 )
 
 # ------------------------------------------------------------
@@ -157,7 +171,7 @@ set_target_properties(jieyu_shared PROPERTIES
 #    cmake --build build --target jieyu_linux          可执行
 #    cmake --build build --target jieyu_linux_so       动态库
 #  Zig 不在 PATH 里时：-DZIG_EXECUTABLE=D:/path/to/zig.exe
-#  产物：工程根目录 jieyu（静态 ELF）与 jieyu.so（C 接口动态库）
+#  产物：resut/ 下的 jieyu（静态 ELF）与 jieyu.so（C 接口动态库）
 # ------------------------------------------------------------
 if(NOT ZIG_EXECUTABLE)
     find_program(ZIG_EXECUTABLE NAMES zig
@@ -172,7 +186,7 @@ if(ZIG_EXECUTABLE)
                 -I${CMAKE_CURRENT_SOURCE_DIR}
                 -I${CMAKE_CURRENT_SOURCE_DIR}/libs
                 ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-                -o ${CMAKE_CURRENT_SOURCE_DIR}/jieyu
+                -o ${JIEYU_OUT}/jieyu
         COMMENT "交叉编译 jieyu（x86_64-linux-musl，静态，std::thread 线程池）"
         VERBATIM)
 
@@ -186,7 +200,7 @@ if(ZIG_EXECUTABLE)
                 -I${CMAKE_CURRENT_SOURCE_DIR}
                 -I${CMAKE_CURRENT_SOURCE_DIR}/libs
                 -x c++ ${CMAKE_CURRENT_SOURCE_DIR}/main.hpp
-                -o ${CMAKE_CURRENT_SOURCE_DIR}/jieyu.so
+                -o ${JIEYU_OUT}/jieyu.so
         COMMENT "交叉编译 jieyu.so（x86_64-linux-musl，C 接口）"
         VERBATIM)
 else()

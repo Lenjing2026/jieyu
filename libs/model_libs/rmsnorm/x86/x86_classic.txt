@@ -1,0 +1,27 @@
+[&]() __attribute__((target(IN_SET IN_EXT))){
+SIMD_K s0=SIMD_ZERO(),s1=SIMD_ZERO();
+int i=0;
+for(;i+LONG*2<=n;i+=LONG*2){
+    const SIMD_K x0=SIMD_LOAD(x+i);
+    const SIMD_K x1=SIMD_LOAD(x+i+LONG);
+    s0=SIMD_FMA(x0,x0,s0);
+    s1=SIMD_FMA(x1,x1,s1);
+}
+for(;i+LONG<=n;i+=LONG){
+    const SIMD_K x0=SIMD_LOAD(x+i);
+    s0=SIMD_FMA(x0,x0,s0);
+}
+float ss=SIMD_HSUM(SIMD_ADD(s0,s1));
+for(;i<n;i++) ss+=x[i]*x[i];
+const float den=ss/n+eps;
+if(den<=0.0f){
+    for(int k=0;k<n;k++) y[k]=0.0f;
+    return;
+}
+const float scale=1.0f/sqrtf(den);
+const SIMD_K vs=SIMD_SET1(scale);
+i=0;
+for(;i+LONG<=n;i+=LONG)
+    SIMD_STORE(y+i,SIMD_MUL(SIMD_MUL(SIMD_LOAD(x+i),vs),SIMD_LOAD(weight+i)));
+for(;i<n;i++) y[i]=x[i]*scale*weight[i];
+}();

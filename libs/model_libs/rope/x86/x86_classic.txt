@@ -1,0 +1,39 @@
+[&]() __attribute__((target(IN_SET IN_EXT))){
+const int half=head_dim/2;
+par_for(0,seq,seq>=32,[&](int64_t p0,int64_t p1) __attribute__((target(IN_SET IN_EXT))){
+for (int64_t pos=p0;pos<p1;pos++) {
+    const float* c=cos_table+(size_t)(start_pos+pos)*half;
+    const float* s=sin_table+(size_t)(start_pos+pos)*half;
+    for (int h=0;h<num_heads;h++) {
+        float* qh=q+((size_t)pos*num_heads+h)*head_dim;
+        int i=0;
+        for (;i+LONG<=half;i+=LONG){
+            const SIMD_K lo=SIMD_LOAD(qh+2*i);
+            const SIMD_K hi=SIMD_LOAD(qh+2*i+LONG);
+            const SIMD_K x0=SIMD_SHUFFLE_PS(lo,hi,0x88);
+            const SIMD_K x1=SIMD_SHUFFLE_PS(lo,hi,0xDD);
+            const SIMD_V128 cl=SIMD_LOAD128(c+i);
+            const SIMD_V128 ch=SIMD_LOAD128(c+i+4);
+            const SIMD_V128 sl=SIMD_LOAD128(s+i);
+            const SIMD_V128 sh=SIMD_LOAD128(s+i+4);
+            const SIMD_K cv=SIMD_MK(SIMD_SHUFFLE128(cl,ch,0x44),SIMD_SHUFFLE128(cl,ch,0xEE));
+            const SIMD_K sv=SIMD_MK(SIMD_SHUFFLE128(sl,sh,0x44),SIMD_SHUFFLE128(sl,sh,0xEE));
+            const SIMD_K r0=SIMD_FMSUB(x0,cv,SIMD_MUL(x1,sv));
+            const SIMD_K r1=SIMD_FMA(x0,sv,SIMD_MUL(x1,cv));
+            const SIMD_K e=SIMD_UNPACKLO(r0,r1);
+            const SIMD_K o=SIMD_UNPACKHI(r0,r1);
+            SIMD_STORE128(qh+2*i,SIMD_LO128(e));
+            SIMD_STORE128(qh+2*i+4,SIMD_LO128(o));
+            SIMD_STORE128(qh+2*i+LONG,SIMD_HI128(e));
+            SIMD_STORE128(qh+2*i+LONG+4,SIMD_HI128(o));
+        }
+        for (;i<half;i++){
+            const float a=qh[2*i];
+            const float b=qh[2*i+1];
+            qh[2*i]=a*c[i]-b*s[i];
+            qh[2*i+1]=a*s[i]+b*c[i];
+        }
+    }
+}
+});
+}();

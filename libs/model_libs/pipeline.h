@@ -37,6 +37,9 @@ struct ModelRefs {
     int head_dim=0,intermediate=0,vocab_size=0,max_seq=0;
     bool qkv_bias=false;
     bool add_bos=true;
+    int max_new=256;
+    float repetition_penalty=1.1f;
+    bool show_speed=false;
     std::string s_start,s_end,s_text;
     std::string s_user,s_asst,s_turn;
     int q_dim() const { return num_heads * head_dim; }
@@ -63,7 +66,7 @@ inline bool bind_model(ModelRefs& m,int max_seq=1024,std::string* error=nullptr)
         return false;
     };
     if(!bfile::current().ok){
-        return fail("model.bf 没有张量目录（v2），请先用 jieyu --convert 把 safetensors 转过来");
+        return fail("model.bf 没有张量目录,请先用 jieyu -convert 转化");
     }
     m.num_layers=static_cast<int>(model.l);
     m.hidden=static_cast<int>(model.h);
@@ -258,33 +261,33 @@ inline bool echo_token(int id,void* ud){
 
 /*
   文本生成：encode 提示词 -> 前向 -> 采样 -> decode 回显
-  参数：
-    tok                 分词器，encode 提示词、decode 出文本
-    prompt              输入文本，需要自己拼好对话模板
-    m                   已绑定的模型引用，含权重、超参、RoPE 表
-    max_new             最多生成多少个新 token；<=0 时取 m.max_seq
-    temperature         采样温度；<=0 走贪心（取最大 logits），>0 走 softmax + LCG 随机采样
-    out                 输出参数，写到模型生成的那部分纯文本（不含提示词），函数内会先清空
-    add_bos             是否在提示词前插 BOS；BOS 不存在或越界时自动忽略
-    echo                边生成边回显的流，nullptr 表示只写 out 不回显
-    repetition_penalty  重复惩罚，对已生成的 token 生效：logits>0 除以它，logits<=0 乘以它；1.0 关闭
-    show_speed          是否在 stdout 打印预填充/解码速度统计
+  参数（* 之后都有默认值）：
+    tok          分词器，encode 提示词、decode 出文本
+    prompt       输入文本，需要自己拼好对话模板
+    m            已绑定的模型引用，除温度/回显外的设置都在这里：
+                   m.max_new            最多生成多少 token，<=0 就取 m.max_seq
+                   m.repetition_penalty 重复惩罚（1.0 关闭）
+                   m.add_bos            提示词前要不要插 BOS
+                   m.show_speed         要不要打印预填充/解码速度
+    out          输出参数，写到模型生成的那部分纯文本（不含提示词），函数内会先清空
+    temperature  采样温度；0 走贪心（取最大 logits），>0 走 softmax + LCG 随机采样
+    echo         边生成边回显的流，nullptr 只写 out 不回显
   返回：
     >0  新生成的 token 数
     =0  没有产出（提示词为空，或 max_seq 已被提示词占满）
     -1  失败（提示词里有超出词表范围的 token id，多半是词表和模型不匹配）
 */
-inline int generate_text(const json_libs::Tokenizer& tok,const std::string& prompt,const ModelRefs& m,
-                         int max_new,float temperature,std::string& out,
-                         bool add_bos=true,FILE* echo=nullptr,
-                         float repetition_penalty=1.0f,bool show_speed=false){
+inline int generate_text(const json_libs::Tokenizer& tok,const std::string& prompt,
+                         const ModelRefs& m,std::string& out,
+                         float temperature=0.7f,FILE* echo=nullptr){
     std::vector<int32_t> ids=tok.encode(prompt);
     const int32_t bos=tok.bos_id();
-    if(add_bos&&bos>=0&&bos < m.vocab_size) ids.insert(ids.begin(),bos);
+    if(m.add_bos&&bos>=0&&bos < m.vocab_size) ids.insert(ids.begin(),bos);
     if(ids.empty()){
         out.clear();
         return 0;
     }
+    int max_new=m.max_new;
     if(max_new<=0) max_new=m.max_seq;
     for(int32_t id:ids){
         if(id < 0||id>=m.vocab_size){
@@ -337,7 +340,7 @@ inline int generate_text(const json_libs::Tokenizer& tok,const std::string& prom
                              m.embed,m.lm_head,m.layers.data(),m.num_layers,m.final_norm,
                              m.rope.cos.data(),m.rope.sin.data(),m.max_seq,max_new,
                              temperature,m.vocab_size,m.hidden,m.num_heads,m.num_kv_heads,
-                             m.head_dim,m.intermediate,out_ids.data(),repetition_penalty,
+                             m.head_dim,m.intermediate,out_ids.data(),m.repetition_penalty,
                              echo_token,&sink);
     if(echo!=nullptr){
         const size_t at=marker_at(*sink.out,stops,nstop);
@@ -350,7 +353,7 @@ inline int generate_text(const json_libs::Tokenizer& tok,const std::string& prom
         fputc('\n',echo);
         fflush(echo);
     }
-    if(show_speed&&sink.ntok > 0){
+    if(m.show_speed&&sink.ntok > 0){
         const std::chrono::steady_clock::time_point t_end=std::chrono::steady_clock::now();
         const double pre_s=std::chrono::duration<double>(sink.t_first - sink.t0).count();
         const double dec_s=std::chrono::duration<double>(sink.t_last - sink.t_first).count();
@@ -358,12 +361,12 @@ inline int generate_text(const json_libs::Tokenizer& tok,const std::string& prom
         const int dec_n=sink.ntok - 1;
         const double pre_v=(prompt_len > 0&&pre_s > 0.0)?prompt_len / pre_s:0.0;
         const double dec_v=(dec_n > 0&&dec_s > 0.0)?dec_n / dec_s:0.0;
-        printf("[速度]预填充 %d token,%g 秒(%g token/秒)\n",prompt_len,pre_s,pre_v);
+        printf("[速度] 预填充 %d token,%g 秒(%g token/秒)\n",prompt_len,pre_s,pre_v);
         if(dec_n > 0){
             printf("       解码:%d token,%g秒(%g token/s,%g ms/token)\n",
                    dec_n,dec_s,dec_v,dec_v>0.0?1000.0/dec_v:0.0);
         }else {
-            printf("       解码:0 token(这次没进解码阶段)\n");
+            printf("[error]no_decoding\n");
         }
         printf("       总用时 %g 秒\n",total);
     }
@@ -378,6 +381,11 @@ struct LoadedModel {
     std::string s_system;
     std::string s_name;
     std::string s_user,s_asst,s_bos,s_turn_end;
+
+    int generate(const std::string& prompt,std::string& out,float temperature=0.7f,
+                 FILE* echo=nullptr){
+        return generate_text(tokenizer,prompt,refs,out,temperature,echo);
+    }
 
     void free(){
         refs.free();
@@ -400,9 +408,8 @@ inline bool load_model_dir(LoadedModel& out,const std::string& dir,int max_seq=1
     if(!bind_model(out.refs,max_seq,error)){
         return false;
     }
-    const std::filesystem::path base(dir);
-    const std::string vocab=(base / "vocab.json").string();
-    const std::string merges=(base / "merges.txt").string();
+    const std::string vocab=model.model_tokenizer.string();
+    const std::string merges=model.model_merges.string();
     if(!out.tokenizer.load(vocab,merges)){
         return fail("分词器加载失败: " + vocab + " / " + merges);
     }
@@ -475,8 +482,7 @@ inline std::string acp_to_utf8(const std::string& text){
 #endif
 }
 
-inline int run_chat(LoadedModel& m,int max_new,float temperature,float repetition_penalty=1.1f,
-                    bool show_speed=false){
+inline int run_chat(LoadedModel& m,float temperature=0.7f){
     const std::string& p_start=m.s_start;
     const std::string& p_end=m.s_end;
     auto has_base=[](const std::string& s)->bool{
@@ -521,9 +527,7 @@ inline int run_chat(LoadedModel& m,int max_new,float temperature,float repetitio
         printf("  [给模型看 %llu token，历史 %llu 轮]\n",
                (unsigned long long)m.tokenizer.encode(feed).size(),(unsigned long long)turns.size());
         std::string out;
-        const int produced=generate_text(m.tokenizer,feed,m.refs,max_new,temperature,
-                                           out,m.refs.add_bos,stdout,repetition_penalty,
-                                           show_speed);
+        const int produced=generate_text(m.tokenizer,feed,m.refs,out,temperature,stdout);
         if(produced < 0){
             printf("(生成失败)\n");
             continue;
@@ -541,12 +545,9 @@ inline int run_chat(LoadedModel& m,int max_new,float temperature,float repetitio
     return 0;
 }
 
-inline int run_once(LoadedModel& m,const std::string& prompt,int max_new,float temperature,
-                    float repetition_penalty=1.1f,bool show_speed=false){
+inline int run_once(LoadedModel& m,const std::string& prompt,float temperature=0.7f){
     std::string out;
-    const int produced=generate_text(m.tokenizer,prompt,m.refs,max_new,temperature,
-                                       out,m.refs.add_bos,stdout,repetition_penalty,
-                                       show_speed);
+    const int produced=generate_text(m.tokenizer,prompt,m.refs,out,temperature,stdout);
     if(produced<=0){
         printf("(<nothing>)\n");
         return produced;

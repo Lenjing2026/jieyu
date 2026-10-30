@@ -1,0 +1,16 @@
+[&]() __attribute__((target(IN_SET IN_EXT))){
+par_for(0,m,m>=4,[&](int64_t i0,int64_t i1) __attribute__((target(IN_SET IN_EXT))){
+    for(int64_t i=i0;i<i1;i++){
+        float* crow=C+(size_t)i*n;
+        const float* arow=A+(size_t)i*k;
+        for(int p=0;p<k;p++){
+            const SIMD_K va=SIMD_SET1(arow[p]);
+            const float* brow=B+(size_t)p*n;
+            int j=0;
+            for(;j+LONG<=n;j+=LONG)
+                SIMD_STORE(crow+j,SIMD_FMA(va,SIMD_LOAD(brow+j),SIMD_LOAD(crow+j)));
+            for(;j<n;j++) crow[j]+=arow[p]*brow[j];
+        }
+    }
+});
+}();

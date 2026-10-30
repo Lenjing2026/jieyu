@@ -3,7 +3,7 @@
 #include <vector>
 #include "ffn/ffn.h"
 #include "rmsnorm/rmsnorm.h"
-#include "attention/attention.h"
+#include "attention/attention_q8.h"
 #include "rope/rope.h"
 #include "silu/silu.h"
 #include "../date_libs/parallel.h"
@@ -25,7 +25,7 @@ void transformer_layer(
     const WMat& W3,
     int seq, int hidden, int num_heads, int num_kv_heads,
     int head_dim, int intermediate,
-    int start_pos, float* cache_k, float* cache_v, int kv_cap,
+    int start_pos, const __KVq& kvq,
     float eps=1e-5f
         ) {
     int q_dim=num_heads*head_dim;
@@ -66,8 +66,8 @@ void transformer_layer(
     rope_pos(Q.data(),seq,start_pos,num_heads,head_dim,cos_table,sin_table);
     rope_pos(K.data(),seq,start_pos,num_kv_heads,head_dim,cos_table,sin_table);
 
-    attention(Q.data(),K.data(),V.data(),attn.data(),seq,start_pos,
-              num_heads,num_kv_heads,head_dim,cache_k,cache_v,kv_cap);
+    attention_q8(Q.data(),K.data(),V.data(),attn.data(),seq,start_pos,
+                 num_heads,num_kv_heads,head_dim,kvq);
 
     matmul_w(Wo,seq,hidden,q_dim,attn.data(),proj.data());
 
@@ -109,7 +109,7 @@ void transformer_layer(
     transformer_layer(X,rms1_weight,Wq,Wk,Wv,Wo,nullptr,nullptr,nullptr,
                       cos_table,sin_table,rms2_weight,W1,W2,W3,
                       seq,hidden,num_heads,num_kv_heads,head_dim,intermediate,
-                      0,nullptr,nullptr,0,eps);
+                      0,__KVq{},eps);
 }
 
 void transformer_layer(
@@ -134,6 +134,6 @@ void transformer_layer(
         ) {
     transformer_layer(X,rms1_weight,Wq,Wk,Wv,Wo,bq,bk,bv,cos_table,sin_table,rms2_weight,
                       W1,W2,W3,seq,hidden,num_heads,num_kv_heads,head_dim,intermediate,
-                      0,nullptr,nullptr,0,eps);
+                      0,__KVq{},eps);
 }
 #endif

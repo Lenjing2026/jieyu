@@ -1,0 +1,32 @@
+[&]() __attribute__((target(IN_SET IN_EXT))){
+const SIMD_K one=SIMD_SET1(1.0f);
+const SIMD_K lg2e=SIMD_SET1(1.44269504088896341f);
+const SIMD_K ln2h=SIMD_SET1(0.693359375f);
+const SIMD_K ln2l=SIMD_SET1(-2.12194440e-4f);
+const SIMD_K elo=SIMD_SET1(-87.0f);
+const SIMD_K ehi=SIMD_SET1(88.0f);
+const SIMD_K q1=SIMD_SET1(1.0f/720.0f);
+const SIMD_K q2=SIMD_SET1(1.0f/120.0f);
+const SIMD_K q3=SIMD_SET1(1.0f/24.0f);
+const SIMD_K q4=SIMD_SET1(1.0f/6.0f);
+const SIMD_K q5=SIMD_SET1(0.5f);
+const int nv=n/LONG*LONG;
+par_for(0,nv/LONG,n>=8192,[&](int64_t v0,int64_t v1) __attribute__((target(IN_SET IN_EXT))){
+for(int64_t v=v0;v<v1;v++){
+    const int i=(int)v*LONG;
+    const SIMD_K vx=SIMD_LOAD(x+i);
+    const SIMD_K xa=SIMD_MIN(SIMD_MAX(SIMD_SUB(SIMD_ZERO(),vx),elo),ehi);
+    const SIMD_K nf=SIMD_ROUND(SIMD_MUL(xa,lg2e));
+    const SIMD_K r=SIMD_SUB(SIMD_SUB(xa,SIMD_MUL(nf,ln2h)),SIMD_MUL(nf,ln2l));
+    SIMD_K p=SIMD_FMA(q1,r,q2);
+    p=SIMD_FMA(p,r,q3);
+    p=SIMD_FMA(p,r,q4);
+    p=SIMD_FMA(p,r,q5);
+    p=SIMD_FMA(p,r,one);
+    p=SIMD_FMA(p,r,one);
+    SIMD_STORE(y+i,SIMD_DIV(vx,SIMD_ADD(one,SIMD_MUL(p,SIMD_SCALE2N(nf)))));
+}
+});
+for(int i=nv;i<n;i++)
+    y[i]=x[i]/(1.0f+expf(-x[i]));
+}();

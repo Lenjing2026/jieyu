@@ -31,6 +31,8 @@
 
 #include"date_libs/date.h"
 #include"date_libs/check_cpu.h"
+#include"date_libs/info.h"
+
 #include"mapp_libs/InMapp.h"
 #include"matmul_libs/matmul.h"
 #include"matmul_libs/matmul_f16.h"
@@ -54,7 +56,7 @@
 #include"model_libs/silu/silu.h"
 #include"model_libs/rmsnorm/rmsnorm.h"
 #include"model_libs/rope/rope.h"
-#include"model_libs/attention/attention.h"
+#include"model_libs/attention/attention_q8.h"
 #include"model_libs/ffn/ffn.h"
 #include"model_libs/transformer_layer.h"
 #include"model_libs/forward.h"

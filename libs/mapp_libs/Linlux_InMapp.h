@@ -1,5 +1,6 @@
 ﻿#ifndef LINLUX_INMAPP_H
 #define LINLUX_INMAPP_H
+#if !defined(_WIN32)
 #include<fcntl.h>
 #include<sys/mman.h>
 #include<sys/stat.h>
@@ -18,7 +19,7 @@ inline void load_model_map(const path& dir){
         close(fd);
         throw runtime_error("fstat_Error");
     }
-    void* base=mmap(nullptr,(size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);
+    void* base=mmap(nullptr,(::size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);
     if(base==MAP_FAILED){
         close(fd);
         throw runtime_error("mmap_Error");
@@ -30,7 +31,7 @@ inline void load_model_map(const path& dir){
 inline void free_model_map(){
     bfile::current().reset();
     if(model.model_map){
-        munmap(model.model_map,(size_t)model.file_size);
+        munmap(model.model_map,(::size_t)model.file_size);
         model.model_map=nullptr;
     }
     if(model.model_handle>=0){
@@ -38,4 +39,5 @@ inline void free_model_map(){
         model.model_handle=-1;
     }
 }
+#endif // !defined(_WIN32)
 #endif

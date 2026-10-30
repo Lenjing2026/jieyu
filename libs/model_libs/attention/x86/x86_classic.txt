@@ -1,0 +1,75 @@
+[&]() __attribute__((target(IN_SET IN_EXT))){
+if(num_kv_heads<=0||num_heads%num_kv_heads!=0)
+    throw std::runtime_error("attention_q8: num_heads 必须能被 num_kv_heads 整除");
+if(seq<=0) throw std::runtime_error("attention_q8: seq 必须为正");
+if(start_pos<0) throw std::runtime_error("attention_q8: start_pos 不能为负");
+if(!kvq.ok()) throw std::runtime_error("attention_q8: KV cache 指针必须齐全");
+if((size_t)start_pos+(size_t)seq>(size_t)kvq.cap)
+    throw std::runtime_error("attention_q8: KV cache 容量不足");
+int kv_dim=num_kv_heads*head_dim;
+kv_pack_q8(K,kvq.k+(size_t)start_pos*kv_dim,kvq.ks+(size_t)start_pos*num_kv_heads,
+           num_kv_heads,head_dim,seq);
+kv_pack_q8(V,kvq.v+(size_t)start_pos*kv_dim,kvq.vs+(size_t)start_pos*num_kv_heads,
+           num_kv_heads,head_dim,seq);
+int group = num_heads / num_kv_heads;
+float scale=1.0f/sqrtf((float)head_dim);
+par_for(0,num_heads,(size_t)num_heads*(size_t)(start_pos+seq)>=1536,[&](int64_t h0,int64_t h1) __attribute__((target(IN_SET IN_EXT))){
+for (int64_t h=h0;h<h1;h++) {
+    std::vector<float> scores((size_t)start_pos+seq);
+    std::vector<int8_t> q8((size_t)head_dim);
+    const int kv_h=(int)(h/group);
+    for (int i=0;i<seq;i++) {
+        const int p=start_pos+i;
+        const float* q=Q+((size_t)i*num_heads+h)*head_dim;
+        float amax=0.0f;
+        for (int d=0;d<head_dim;d++) {
+            const float a=fabsf(q[d]);
+            if (a>amax) amax=a;
+        }
+        const float qinv=amax>1e-8f?127.0f/amax:0.0f;
+        const float qsc=amax>1e-8f?amax/127.0f:0.0f;
+        for (int d=0;d<head_dim;d++) {
+            float x=q[d]*qinv;
+            x=x>127.0f?127.0f:(x<-127.0f?-127.0f:x);
+            q8[d]=(int8_t)lrintf(x);
+        }
+        const int8_t* qp=q8.data();
+        float mxs=-1e30f;
+        for (int j=0;j<=p;j++) {
+            const int8_t* k=kvq.k+((size_t)j*num_kv_heads+kv_h)*head_dim;
+            const float ksc=kvq.ks[(size_t)j*num_kv_heads+kv_h]*qsc*scale;
+            SIMD_INT acc=SIMD_ZEROI();
+            int d=0;
+            for (;d+LONG*4<=head_dim;d+=LONG*4) {
+                const SIMD_INT qv=SIMD_LOADI(qp+d);
+                const SIMD_INT kv=SIMD_LOADI(k+d);
+                acc=SIMD_DP4A(acc,SIMD_ABS8(qv),SIMD_SIGN8(kv,qv));
+            }
+            int32_t dot=SIMD_HSUM32(acc);
+            for (;d<head_dim;d++) dot+=(int32_t)qp[d]*(int32_t)k[d];
+            const float dt=(float)dot*ksc;
+            scores[j]=dt;
+            if (dt>mxs) mxs=dt;
+        }
+        float sum = 0.0f;
+        for (int j=0;j<=p;j++) {
+            scores[j]=expf(scores[j]-mxs);
+            sum+=scores[j];
+        }
+        float inv_sum=1.0f/sum;
+        for (int j=0;j<=p;j++) scores[j]*=inv_sum;
+        float* o=out+((size_t)i*num_heads + h) * head_dim;
+        memset(o,0,head_dim*sizeof(float));
+        for (int j=0;j<=p;j++) {
+            const int8_t* v=kvq.v+((size_t)j*num_kv_heads+kv_h)*head_dim;
+            const float pr=scores[j]*kvq.vs[(size_t)j*num_kv_heads+kv_h];
+            const SIMD_K vprob=SIMD_SET1(pr);
+            int d=0;
+            for (;d+LONG<=head_dim;d+=LONG)
+                SIMD_STORE(o+d,SIMD_FMA(vprob,SIMD_I32TOPS(SIMD_I8TOI32(v+d)),SIMD_LOAD(o+d)));
+            for (;d<head_dim;d++) o[d]+=pr*(float)v[d];
+        }
+    }
+}
+});
+}();

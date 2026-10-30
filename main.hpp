@@ -65,15 +65,15 @@ JIEYU_API const char* jieyu_version(){
 
 JIEYU_API int jieyu_generate(jieyu_model h,const char* prompt,
                              char* out,int cap,
-                             int max_new,float temperature,float repetition_penalty){
+                             int max_new=256,float temperature=0.7f,float repetition_penalty=1.1f){
     if(h==nullptr||prompt==nullptr) return -1;
     std::string text;
-    const int produced=pipeline::generate_text(h->model.tokenizer,prompt,h->model.refs,
-                                               max_new,temperature,text,
-                                               h->model.refs.add_bos,nullptr,
-                                               repetition_penalty,false);
+    h->model.refs.max_new=max_new;
+    h->model.refs.repetition_penalty=repetition_penalty;
+    const int produced=pipeline::generate_text(h->model.tokenizer,prompt,h->model.refs,text,
+                                               temperature,nullptr);
     if(produced<0){
-        h->error="生成失败（词表与模型不匹配？）";
+        h->error="生成失败";
         return -1;
     }
     jieyu_copy_out(text,out,cap);
@@ -83,40 +83,20 @@ JIEYU_API int jieyu_generate(jieyu_model h,const char* prompt,
 JIEYU_API int jieyu_generate_jsonl(jieyu_model h,const char* jsonl,
                                    const char* qb,const char* qe,
                                    char* out,int cap,
-                                   int max_new,float temperature,float repetition_penalty){
+                                   int max_new=256,float temperature=0.8f,float repetition_penalty=1.1f){
     if(h==nullptr||jsonl==nullptr) return -1;
-    json_libs::json_file way;
-    if(!way.SetJsonWay(jsonl)){
-        h->error=way.LastError();
-        return -1;
-    }
-    json_libs::jsonl_lib lines(way);
-    std::string feed;
-    const int n=jsonl_len(way);
-    for(int i=0;i<n;i++){
-        const std::string tn=lines.jsonl_sget(i,"name");
-        const std::string tm=lines.jsonl_sget(i,"message");
-        if(tn.empty()&&tm.empty()) continue;
-        feed+=(qb==nullptr?h->model.s_start:qb);
-        feed+=tn;
-        feed+='\n';
-        feed+=tm;
-        feed+=(qe==nullptr?h->model.s_end:qe);
-        feed+='\n';
-    }
-    if(feed.empty()){
-        h->error="jsonl 里没有可用记录";
-        return -1;
-    }
-    if(!h->model.s_asst.empty()) feed+=h->model.s_asst;
-    else if(h->model.s_start=="<|im_start|>") feed+=h->model.s_start+"assistant\n";
     std::string text;
-    const int produced=pipeline::generate_text(h->model.tokenizer,feed,h->model.refs,
-                                               max_new,temperature,text,
-                                               h->model.refs.add_bos,nullptr,
-                                               repetition_penalty,false);
+    h->model.refs.max_new=max_new;
+    h->model.refs.repetition_penalty=repetition_penalty;
+    const int produced=json_ochat_text(jsonl,h->model,text,
+                                       qb==nullptr?"":qb,qe==nullptr?"":qe,
+                                       temperature);
+    if(produced==-2){
+        h->error="jsonl_no_srch";
+        return -1;
+    }
     if(produced<0){
-        h->error="生成失败（词表与模型不匹配？）";
+        h->error="生成失败";
         return -1;
     }
     jieyu_copy_out(text,out,cap);

@@ -1,6 +1,8 @@
 ﻿#ifndef CHECK_CPU_H
 #define CHECK_CPU_H
 #include<cstdio>
+#include<cstdlib>
+#include<cstring>
 #include<cpuid.h>
 using namespace std;
 struct cpu_dat{
@@ -48,6 +50,21 @@ struct cpu_dat{
         if(!osxsave||(x0&0xE6u)!=0xE6u){
             avx512f=false;avx512bw=false;avx512dq=false;
             avx512vnni=false;avx512vl=false;avx512bf16=false;
+        }
+        const char* isa=getenv("JIEYU_ISA");
+        if(isa!=nullptr&&isa[0]!='\0'&&strcmp(isa,"auto")!=0){
+            avx512f=false;avx512bw=false;avx512dq=false;
+            avx512vnni=false;avx512vl=false;avx512bf16=false;
+            if(strcmp(isa,"classic")==0||strcmp(isa,"scalar")==0){
+                avx=false;avx2=false;fma3=false;f16c=false;avxvnni=false;
+            }else if(strcmp(isa,"avx")==0){
+                avx2=false;fma3=false;f16c=false;avxvnni=false;
+            }else if(strcmp(isa,"avx2")==0){
+                fma3=false;f16c=false;avxvnni=false;
+            }else if(strcmp(isa,"fma")==0){
+                avxvnni=false;
+            }
+            printf("[cpu] JIEYU_ISA=%s：只跑该级别及以下的路径\n",isa);
         }
     }
 } cpu_can;

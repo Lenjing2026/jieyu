@@ -1,5 +1,6 @@
 ﻿#ifndef winmpp_h
 #define winmpp_h
+#if defined(_WIN32)
 #include<windows.h>
 #include<filesystem>
 #include"../date_libs/date.h"
@@ -54,4 +55,5 @@ inline void free_model_map(){
         model.model_handle=NULL;
     }
 }
+#endif // defined(_WIN32)
 #endif

@@ -68,6 +68,8 @@ void forward_cached(
         if(l+1<num_layers)
             prefetch::layer(layers[l+1],(size_t)hidden,q_dim,kv_dim,(size_t)intermediate);
         const LayerWeights& w=layers[l];
+        const __KVq kvq{cache.k_ptr(l,0),cache.ks_ptr(l,0),cache.v_ptr(l,0),
+                        cache.vs_ptr(l,0),cache.max_seq};
         transformer_layer(
             X,
             w.rms1_weight,
@@ -78,7 +80,7 @@ void forward_cached(
             w.W1, w.W2, w.W3,
             seq, hidden, num_heads, num_kv_heads,
             head_dim, intermediate,
-            start_pos, cache.k_ptr(l,0), cache.v_ptr(l,0), cache.max_seq
+            start_pos, kvq
         );
     }
     std::vector<float> xn((size_t)seq*hidden);

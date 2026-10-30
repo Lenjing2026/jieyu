@@ -24,6 +24,13 @@ struct ModelInfo{
     path model_vector;
     path model_info;
     path model_tokenizer;
+    path model_merges;
+    void set_model(const path& dir){
+        model_vector=dir/"model.bf";
+        model_info=dir/"model_info.json";
+        model_tokenizer=dir/"vocab.json";
+        model_merges=dir/"merges.txt";
+    }
 #if defined(_WIN32)
     HANDLE model_handle;
     LPVOID model_map;
@@ -85,8 +92,10 @@ struct __KVcache{
         num_kv_heads,
         head_dim,
         current_len;
-    std::vector<float> k;
-    std::vector<float> v;
+    std::vector<int8_t> k;
+    std::vector<int8_t> v;
+    std::vector<float> ks;
+    std::vector<float> vs;
     void init(int l,int max_s,int nkh,int hd){
         num_layers=l;
         max_seq=max_s;
@@ -94,17 +103,46 @@ struct __KVcache{
         head_dim=hd;
         current_len=0;
         size_t size=(size_t)num_layers*max_seq*num_kv_heads*head_dim;
-        k.assign(size,0.0f);
-        v.assign(size,0.0f);
+        size_t rows=(size_t)num_layers*max_seq*num_kv_heads;
+        k.assign(size,0);
+        v.assign(size,0);
+        ks.assign(rows,0.0f);
+        vs.assign(rows,0.0f);
     }
-    void free(){current_len=0;}
-    float* k_ptr(int l,int p){
+    void free(){
+        current_len=0;
+        k.clear();
+        v.clear();
+        ks.clear();
+        vs.clear();
+        k.shrink_to_fit();
+        v.shrink_to_fit();
+        ks.shrink_to_fit();
+        vs.shrink_to_fit();
+        num_layers=max_seq=num_kv_heads=head_dim=0;
+    }
+    size_t kv_bytes() const{
+        return k.capacity()*sizeof(int8_t)+v.capacity()*sizeof(int8_t)
+              +(ks.capacity()+vs.capacity())*sizeof(float);
+    }
+    size_t f32_bytes() const{
+        return (size_t)num_layers*max_seq*num_kv_heads*head_dim*sizeof(float)*2;
+    }
+    int8_t* k_ptr(int l,int p){
         size_t o=((size_t)l*max_seq+p)*num_kv_heads*head_dim;
         return k.data()+o;
     }
-    float* v_ptr(int l,int p){
+    int8_t* v_ptr(int l,int p){
         size_t o=((size_t)l*max_seq+p)*num_kv_heads*head_dim;
         return v.data()+o;
+    }
+    float* ks_ptr(int l,int p){
+        size_t o=((size_t)l*max_seq+p)*num_kv_heads;
+        return ks.data()+o;
+    }
+    float* vs_ptr(int l,int p){
+        size_t o=((size_t)l*max_seq+p)*num_kv_heads;
+        return vs.data()+o;
     }
 };
 #endif

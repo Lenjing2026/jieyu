@@ -20,7 +20,7 @@
 #include"model_libs/ffn/ffn.h"
 #include"model_libs/rope/rope.h"
 #include"model_libs/rmsnorm/rmsnorm.h"
-#include"model_libs/attention/attention.h"
+#include"model_libs/attention/attention_q8.h"
 #include"model_libs/transformer_layer.h"
 #include"model_libs/generate.h"
 #include"model_libs/bfile.h"
@@ -342,7 +342,8 @@ inline float run_case(int seq,int num_heads,int num_kv_heads,int head_dim){
     fill_random(K,2);
     fill_random(V,3);
     const std::vector<float> want=reference(Q,K,V,seq,num_heads,num_kv_heads,head_dim);
-    attention(Q.data(),K.data(),V.data(),got.data(),seq,0,num_heads,num_kv_heads,head_dim);
+    attention_q8(Q.data(),K.data(),V.data(),got.data(),seq,0,
+                 num_heads,num_kv_heads,head_dim,__KVq{});
     return worst_err(got,want);
 }
 
@@ -991,7 +992,8 @@ bool check_pipeline(){
 
     {
         std::string out;
-        const int produced=loaded?pipeline::generate_text(m.tokenizer,"abcdefgh",m.refs,16,0.0f,out)
+        if(loaded){ m.refs.max_new=16; m.refs.repetition_penalty=1.0f; }
+        const int produced=loaded?pipeline::generate_text(m.tokenizer,"abcdefgh",m.refs,out,0.0f)
             :-1;
         const bool ok=loaded&&out=="ijklmnopqrstuvwx"&&produced==16;
         printf("[ 6/%d] abcdefgh -> %s (%d 个 token)   %s\n",total,out.c_str(),produced,
@@ -1001,7 +1003,8 @@ bool check_pipeline(){
 
     {
         std::string out;
-        const int produced=loaded?pipeline::generate_text(m.tokenizer,"abc",m.refs,5,0.0f,out)
+        if(loaded) m.refs.max_new=5;
+        const int produced=loaded?pipeline::generate_text(m.tokenizer,"abc",m.refs,out,0.0f)
             :-1;
         const bool ok=loaded&&produced==5&&out=="defgh";
         printf("[ 7/%d] max_new=5 就正好生成 5 个 (得到 %s)      %s\n",total,out.c_str(),
@@ -1012,8 +1015,9 @@ bool check_pipeline(){
     {
         std::string a,b;
         if(loaded){
-            pipeline::generate_text(m.tokenizer,"xyz",m.refs,8,0.0f,a);
-            pipeline::generate_text(m.tokenizer,"xyz",m.refs,8,0.0f,b);
+            m.refs.max_new=8;
+            pipeline::generate_text(m.tokenizer,"xyz",m.refs,a,0.0f);
+            pipeline::generate_text(m.tokenizer,"xyz",m.refs,b,0.0f);
         }
         const bool ok=loaded&&!a.empty()&&a==b;
         printf("[ 8/%d] 同一提示词两次结果一致 (得到 %s)        %s\n",total,a.c_str(),
@@ -1024,8 +1028,12 @@ bool check_pipeline(){
     {
         std::string with_bos,without_bos;
         if(loaded){
-            pipeline::generate_text(m.tokenizer,"abc",m.refs,4,0.0f,with_bos,true);
-            pipeline::generate_text(m.tokenizer,"abc",m.refs,4,0.0f,without_bos,false);
+            m.refs.max_new=4;
+            m.refs.add_bos=true;
+            pipeline::generate_text(m.tokenizer,"abc",m.refs,with_bos,0.0f);
+            m.refs.add_bos=false;
+            pipeline::generate_text(m.tokenizer,"abc",m.refs,without_bos,0.0f);
+            m.refs.add_bos=true;
         }
         const bool ok=loaded&&!with_bos.empty()&&with_bos==without_bos;
         printf("[ 9/%d] 加不加 BOS 都不影响结果                  %s\n",total,ok?"OK":"FAIL");
@@ -1035,7 +1043,8 @@ bool check_pipeline(){
     {
         std::string out;
         const std::string huge(200,'k');
-        const int produced=loaded?pipeline::generate_text(m.tokenizer,huge,m.refs,16,0.0f,out)
+        if(loaded) m.refs.max_new=16;
+        const int produced=loaded?pipeline::generate_text(m.tokenizer,huge,m.refs,out,0.0f)
             :-1;
         const bool ok=loaded&&produced==0&&out.empty();
         printf("[10/%d] 提示词 200 字符 > max_seq 64 -> 安全停下  %s\n",total,ok?"OK":"FAIL");
