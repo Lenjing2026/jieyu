@@ -64,15 +64,21 @@ void attention_q8(float* Q,float* K,float* V,float* out,int seq,int start_pos,
         #define SIMD_HSUM32(v) ({__m256i _t=(v);__m128i _a=_mm_add_epi32(_mm256_castsi256_si128(_t),_mm256_extracti128_si256(_t,1));_a=_mm_add_epi32(_a,_mm_shuffle_epi32(_a,_MM_SHUFFLE(1,0,3,2)));_a=_mm_add_epi32(_a,_mm_shuffle_epi32(_a,_MM_SHUFFLE(2,3,0,1)));_mm_cvtsi128_si32(_a);})
         #define LONG 8
         #define IN_SET "avx2,avxvnni"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"../../matmul_libs/undef.h"
     }
     else if(cpu_can.avx2){
@@ -98,15 +104,21 @@ void attention_q8(float* Q,float* K,float* V,float* out,int seq,int start_pos,
         #define SIMD_HSUM32(v) ({__m256i _t=(v);__m128i _a=_mm_add_epi32(_mm256_castsi256_si128(_t),_mm256_extracti128_si256(_t,1));_a=_mm_add_epi32(_a,_mm_shuffle_epi32(_a,_MM_SHUFFLE(1,0,3,2)));_a=_mm_add_epi32(_a,_mm_shuffle_epi32(_a,_MM_SHUFFLE(2,3,0,1)));_mm_cvtsi128_si32(_a);})
         #define LONG 8
         #define IN_SET "avx2"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"../../matmul_libs/undef.h"
     }
     else{

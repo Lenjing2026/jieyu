@@ -16,15 +16,21 @@ void matmul(const int m,const int n,const int k,const float* A,const float* B,fl
         #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
         #define LONG 8
         #define IN_SET "avx2"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"undef.h"
     }
     else if(cpu_can.avx){
@@ -37,15 +43,21 @@ void matmul(const int m,const int n,const int k,const float* A,const float* B,fl
         #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
         #define LONG 8
         #define IN_SET "avx"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"undef.h"
     }
     else{

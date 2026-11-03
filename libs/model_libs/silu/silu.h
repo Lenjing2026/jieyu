@@ -22,15 +22,21 @@ void silu(float* x,float* y,int n){
         #define SIMD_SCALE2N(v) ({__m256 _n=(v);__m128i _l=_mm_slli_epi32(_mm_add_epi32(_mm_cvtps_epi32(_mm256_castps256_ps128(_n)),_mm_set1_epi32(127)),23);__m128i _h=_mm_slli_epi32(_mm_add_epi32(_mm_cvtps_epi32(_mm256_extractf128_ps(_n,1)),_mm_set1_epi32(127)),23);_mm256_insertf128_ps(_mm256_castps128_ps256(_mm_castsi128_ps(_l)),_mm_castsi128_ps(_h),1);})
         #define LONG 8
         #define IN_SET "avx2"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"../../matmul_libs/undef.h"
     }
     else if(cpu_can.avx){
@@ -50,15 +56,21 @@ void silu(float* x,float* y,int n){
         #define SIMD_SCALE2N(v) ({__m256 _n=(v);__m128i _l=_mm_slli_epi32(_mm_add_epi32(_mm_cvtps_epi32(_mm256_castps256_ps128(_n)),_mm_set1_epi32(127)),23);__m128i _h=_mm_slli_epi32(_mm_add_epi32(_mm_cvtps_epi32(_mm256_extractf128_ps(_n,1)),_mm_set1_epi32(127)),23);_mm256_insertf128_ps(_mm256_castps128_ps256(_mm_castsi128_ps(_l)),_mm_castsi128_ps(_h),1);})
         #define LONG 8
         #define IN_SET "avx"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) SIMD_ADD(SIMD_MUL(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"../../matmul_libs/undef.h"
     }
     else{

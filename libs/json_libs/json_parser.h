@@ -17,6 +17,7 @@ namespace json_detail {
 class Parser {
 public:
     explicit Parser(const std::string& source):src_(source),pos_(0){}
+    Parser(std::string&&)=delete;
 
     bool parse(Value& out){
         skip_ws();

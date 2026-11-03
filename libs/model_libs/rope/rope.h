@@ -23,17 +23,25 @@ void rope_at(float* q,int seq,int start_pos,int num_heads,int head_dim,const flo
         #define SIMD_FMSUB(a,b,c) _mm256_sub_ps(_mm256_mul_ps(a,b),c)
         #define LONG 8
         #define IN_SET "avx2"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
             #undef SIMD_FMSUB
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define SIMD_FMSUB _mm256_fmsub_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef SIMD_FMSUB
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) _mm256_add_ps(_mm256_mul_ps(a,b),c)
+            #define SIMD_FMSUB(a,b,c) _mm256_sub_ps(_mm256_mul_ps(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"../../matmul_libs/undef.h"
     }
     else if(cpu_can.avx){
@@ -54,17 +62,25 @@ void rope_at(float* q,int seq,int start_pos,int num_heads,int head_dim,const flo
         #define SIMD_FMSUB(a,b,c) _mm256_sub_ps(_mm256_mul_ps(a,b),c)
         #define LONG 8
         #define IN_SET "avx"
-        #define IN_EXT ""
         if(cpu_can.fma3){
             #undef SIMD_FMA
             #undef SIMD_FMSUB
-            #undef IN_EXT
             #define FMA_
             #define SIMD_FMA _mm256_fmadd_ps
             #define SIMD_FMSUB _mm256_fmsub_ps
             #define IN_EXT ",fma"
+            #include"x86/x86_classic.txt"
         }
-        #include"x86/x86_classic.txt"
+        else{
+            #undef FMA_
+            #undef SIMD_FMA
+            #undef SIMD_FMSUB
+            #undef IN_EXT
+            #define SIMD_FMA(a,b,c) _mm256_add_ps(_mm256_mul_ps(a,b),c)
+            #define SIMD_FMSUB(a,b,c) _mm256_sub_ps(_mm256_mul_ps(a,b),c)
+            #define IN_EXT ""
+            #include"x86/x86_classic.txt"
+        }
         #include"../../matmul_libs/undef.h"
     }
     else{

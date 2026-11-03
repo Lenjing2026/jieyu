@@ -52,7 +52,8 @@ public:
             const size_t stop=(end==std::string::npos)?content.size():end;
             if(i==line){
                 json_detail::Value value;
-                json_detail::Parser parser(content.substr(start,stop - start));
+                const std::string text=content.substr(start,stop - start);
+                json_detail::Parser parser(text);
                 if(!parser.parse(value)){
                     return default_value;
                 }
